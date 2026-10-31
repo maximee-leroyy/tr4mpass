@@ -1,7 +1,7 @@
 /*
- * path_a.c -- A5-A11 unlock orchestration.
+ * path_a.c -- A5-A11 pipeline orchestration.
  *
- * Implements the unlock_module_t interface for checkm8-compatible devices.
+ * Implements the pipeline_module_t interface for checkm8-compatible devices.
  * Delegates DFU processing to checkm8, ramdisk setup to path_a patching,
  * activation to record/activation, and cleanup to deletescript.
  */
@@ -9,14 +9,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "unlock/path_a.h"
-#include "unlock/deletescript.h"
+#include "pipeline/path_a.h"
+#include "pipeline/deletescript.h"
 #include "dfu/checkm8.h"
 #include "activation/activation.h"
 #include "activation/record.h"
 #include "util/log.h"
 
-#include "unlock/path_a_internal.h"
+#include "pipeline/path_a_internal.h"
 
 /* ------------------------------------------------------------------ */
 /* Module probe/execute                                                */
@@ -190,7 +190,7 @@ path_a_execute(device_info_t *dev)
 /* Module definition                                                   */
 /* ------------------------------------------------------------------ */
 
-const unlock_module_t path_a_module = {
+const pipeline_module_t path_a_module = {
     .name        = "path_a_checkm8",
     .description = "A5-A11 DFU path via checkm8"
                    " + kernel patching + activation",

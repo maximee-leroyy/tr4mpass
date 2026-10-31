@@ -7,8 +7,8 @@
  * deals in high-level "open / exec / scp / close" operations.
  */
 
-#ifndef UNLOCK_PATH_A_SSH_INTERNAL_H
-#define UNLOCK_PATH_A_SSH_INTERNAL_H
+#ifndef PIPELINE_PATH_A_SSH_INTERNAL_H
+#define PIPELINE_PATH_A_SSH_INTERNAL_H
 
 #include <stddef.h>
 #include <sys/types.h>
@@ -63,4 +63,4 @@ void ssh_close(ssh_sess_t *sess);
 int  ssh_global_init(void);
 void ssh_global_exit(void);
 
-#endif /* UNLOCK_PATH_A_SSH_INTERNAL_H */
+#endif /* PIPELINE_PATH_A_SSH_INTERNAL_H */

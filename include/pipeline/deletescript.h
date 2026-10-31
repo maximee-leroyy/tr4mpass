@@ -34,7 +34,7 @@ int deletescript_run(device_info_t *dev);
 
 /*
  * deletescript_remove_setup_app -- Rename Setup.app to Setup.app.bak.
- * Disables the activation lock setup screen on next boot.
+ * Disables the setup assistant screen on next boot.
  * Returns 0 on success, -1 on error.
  */
 int deletescript_remove_setup_app(device_info_t *dev);
@@ -47,7 +47,7 @@ int deletescript_remove_setup_app(device_info_t *dev);
 int deletescript_set_purplebuddy_done(device_info_t *dev);
 
 /*
- * deletescript_purge_activation_records -- Remove all activation records.
+ * deletescript_purge_activation_records -- Remove activation record plists.
  * Purges both /var/root/Library/Lockdown/activation_records/ and
  * /var/mobile/Library/mad/activation_records/ directories.
  * Returns 0 on success, -1 on error.

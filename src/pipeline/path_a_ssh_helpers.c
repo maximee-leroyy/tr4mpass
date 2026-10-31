@@ -5,7 +5,7 @@
  * and SCP uploads.  ssh_sess_t is opaque to callers.
  */
 
-#include "unlock/path_a_ssh_internal.h"
+#include "pipeline/path_a_ssh_internal.h"
 #include "util/log.h"
 
 #include <arpa/inet.h>

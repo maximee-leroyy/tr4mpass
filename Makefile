@@ -102,12 +102,12 @@ CHIP_DB_CANARY_BIN = tests/chip_db_canary.bin
 # No mocks, no real library linkage required for the SUT code.        #
 # ------------------------------------------------------------------ #
 
-TEST_UNITS  = src/device/chip_db.c src/unlock/unlock.c src/util/log.c \
+TEST_UNITS  = src/device/chip_db.c src/pipeline/pipeline.c src/util/log.c \
               src/util/env_config.c
 
 # Sections linked by both `make test` (hw-independent) and `make test-mocks`.
 TEST_SECT_CORE = tests/test_main.c tests/test_parsing.c tests/test_chip_db.c \
-                 tests/test_unlock_probe.c tests/test_constants.c \
+                 tests/test_pipeline_probe.c tests/test_constants.c \
                  tests/test_cert_extract.c tests/test_signer.c \
                  tests/test_env_config.c
 

@@ -8,8 +8,8 @@
  * path_a_ssh_helpers.c; everything here is flow control.
  */
 
-#include "unlock/path_a_internal.h"
-#include "unlock/path_a_ssh_internal.h"
+#include "pipeline/path_a_internal.h"
+#include "pipeline/path_a_ssh_internal.h"
 #include "device/device.h"
 #include "util/log.h"
 

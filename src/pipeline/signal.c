@@ -7,7 +7,7 @@
 
 #include <string.h>
 #include <stdio.h>
-#include "unlock/signal.h"
+#include "pipeline/signal.h"
 #include "util/log.h"
 
 /* Returns 1 if the field is non-empty, 0 otherwise. */

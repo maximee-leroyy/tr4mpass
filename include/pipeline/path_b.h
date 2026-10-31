@@ -10,10 +10,10 @@
 #ifndef PATH_B_H
 #define PATH_B_H
 
-#include "unlock/unlock.h"
+#include "pipeline/pipeline.h"
 
-/* The Path B processing module for registration with unlock_register(). */
-extern const unlock_module_t path_b_module;
+/* The Path B processing module for registration with pipeline_register(). */
+extern const pipeline_module_t path_b_module;
 
 /*
  * path_b_manipulate_identity -- Modify device serial descriptors in DFU.

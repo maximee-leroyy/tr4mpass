@@ -2,7 +2,7 @@
  * mock_section_stubs.c -- No-op section entry points for `make test`.
  *
  * The hw-independent test target (`make test`) does not link
- * tests/mocks/ and does not pull in src/unlock/path_a_*.c, but it
+ * tests/mocks/ and does not pull in src/pipeline/path_a_*.c, but it
  * does invoke run_ramdisk_tests() / run_ssh_delivery_tests() /
  * run_path_a_integration_tests() / run_path_b_integration_tests()
  * from test_main.c.  These stubs satisfy the linker without running

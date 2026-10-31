@@ -16,7 +16,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 
-#include "unlock/path_a_ramdisk_internal.h"
+#include "pipeline/path_a_ramdisk_internal.h"
 #include "util/log.h"
 
 #define SSH_POLL_INTERVAL_SEC 2

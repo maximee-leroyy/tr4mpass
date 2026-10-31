@@ -25,7 +25,7 @@
  * value).  Help output for the new flags is produced by
  * cli_flags_print_help() so main.c --help can delegate.
  */
-int cli_parse_unlock_flags(int argc, char *argv[]);
+int cli_parse_pipeline_flags(int argc, char *argv[]);
 
 /*
  * Print the processing-pipeline flag block used by --help.  Kept separate

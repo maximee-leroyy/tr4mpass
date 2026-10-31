@@ -35,8 +35,8 @@
 
 #include "compat/libirecovery_compat.h"
 
-#include "unlock/path_a_internal.h"
-#include "unlock/path_a_ramdisk_internal.h"
+#include "pipeline/path_a_internal.h"
+#include "pipeline/path_a_ramdisk_internal.h"
 #include "device/device.h"
 #include "util/log.h"
 

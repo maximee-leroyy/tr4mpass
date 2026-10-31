@@ -96,7 +96,7 @@ static int apply_env(const char *env_name, const char *value)
 /* Parsing                                                        */
 /* -------------------------------------------------------------- */
 
-int cli_parse_unlock_flags(int argc, char *argv[])
+int cli_parse_pipeline_flags(int argc, char *argv[])
 {
     if (argc <= 1 || !argv)
         return 0;

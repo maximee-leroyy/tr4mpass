@@ -12,9 +12,9 @@
 #include "device/device.h"
 #include "device/usb_dfu.h"
 #include "device/chip_db.h"
-#include "unlock/unlock.h"
-#include "unlock/path_a.h"
-#include "unlock/path_b.h"
+#include "pipeline/pipeline.h"
+#include "pipeline/path_a.h"
+#include "pipeline/path_b.h"
 #include "activation/session.h"
 #include "activation/activation.h"
 #include "util/log.h"
@@ -39,7 +39,7 @@ static void print_banner(void)
 {
     printf("========================================\n"
            "  tr4mpass v%s\n"
-           "  Activation lock removal tool\n"
+           "  iOS DFU research toolkit\n"
            "========================================\n\n", TR4MPASS_VERSION);
 }
 
@@ -140,7 +140,7 @@ static int parse_args(int argc, char *argv[], cli_opts_t *opts)
     /*
      * Silence getopt's own errno print for unknown flags -- the
      * pipeline long options (handled later by
-     * cli_parse_unlock_flags) show up here as '?' and should not
+     * cli_parse_pipeline_flags) show up here as '?' and should not
      * abort the program.
      */
     opterr = 0;
@@ -179,7 +179,7 @@ static int parse_args(int argc, char *argv[], cli_opts_t *opts)
                           optopt == OPT_CPID ? "cpid" : "ecid");
                 return -1;
             }
-            /* unknown flag -- defer to cli_parse_unlock_flags */
+            /* unknown flag -- defer to cli_parse_pipeline_flags */
             break;
         default:  print_usage(argv[0]); return -1;
         }
@@ -255,11 +255,11 @@ static void enrich_chip_info(device_info_t *dev)
 
 static void register_modules(void)
 {
-    if (unlock_register(&path_a_module) < 0)
+    if (pipeline_register(&path_a_module) < 0)
         log_warn("Failed to register Path A module");
-    if (unlock_register(&path_b_module) < 0)
+    if (pipeline_register(&path_b_module) < 0)
         log_warn("Failed to register Path B module");
-    log_debug("Registered %d module(s)", unlock_count());
+    log_debug("Registered %d module(s)", pipeline_count());
 }
 
 static void print_module_diagnostics(const device_info_t *dev)
@@ -279,12 +279,12 @@ static void print_module_diagnostics(const device_info_t *dev)
         log_error("Chip CPID 0x%04X not in database.", dev->cpid);
 }
 
-static const unlock_module_t *select_module(device_info_t *dev,
+static const pipeline_module_t *select_module(device_info_t *dev,
                                             const cli_opts_t *opts)
 {
     if (opts->force_path_a) { log_info("Path A forced"); return &path_a_module; }
     if (opts->force_path_b) { log_info("Path B forced"); return &path_b_module; }
-    const unlock_module_t *mod = unlock_select(dev);
+    const pipeline_module_t *mod = pipeline_select(dev);
     if (!mod) { print_module_diagnostics(dev); return NULL; }
     log_info("Auto-selected module: %s", mod->name);
     return mod;
@@ -312,7 +312,7 @@ int main(int argc, char *argv[])
      * Apply pipeline CLI overrides first so argv is still
      * pristine (main.c's getopt_long below will permute argv).
      */
-    if (cli_parse_unlock_flags(argc, argv) != 0) {
+    if (cli_parse_pipeline_flags(argc, argv) != 0) {
         log_error("Failed to parse pipeline CLI flags");
         return 1;
     }
@@ -453,9 +453,9 @@ ao_done:
     }
 
     register_modules();
-    unlock_list();
+    pipeline_list();
 
-    const unlock_module_t *mod = select_module(&dev, &opts);
+    const pipeline_module_t *mod = select_module(&dev, &opts);
     if (!mod) { cleanup(&dev); return 1; }
 
     if (opts.dry_run) {
@@ -467,7 +467,7 @@ ao_done:
 
     log_info("[step 3/4] Selected module: %s", mod->name);
     log_info("[step 4/4] Running module %s", mod->name);
-    ret = unlock_execute(mod, &dev);
+    ret = pipeline_execute(mod, &dev);
     if (ret == 0) {
         log_info("[step 4/4] OK: module %s finished without error", mod->name);
         printf("\n[+] Process completed successfully.\n");

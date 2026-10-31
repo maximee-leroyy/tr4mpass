@@ -12,7 +12,7 @@
 #include "test_framework.h"
 #include "integration_helpers.h"
 
-#include "unlock/path_a.h"
+#include "pipeline/path_a.h"
 #include "device/device.h"
 #include "mocks/mock_control.h"
 

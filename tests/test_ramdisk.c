@@ -12,7 +12,7 @@
 
 #include "test_framework.h"
 
-#include "unlock/path_a_internal.h"
+#include "pipeline/path_a_internal.h"
 #include "device/device.h"
 #include "mocks/mock_control.h"
 

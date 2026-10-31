@@ -27,8 +27,8 @@
 #include "activation/activation.h"
 #include "activation/record.h"
 #include "activation/session.h"
-#include "unlock/path_b.h"
-#include "unlock/signal.h"
+#include "pipeline/path_b.h"
+#include "pipeline/signal.h"
 #include "device/device.h"
 #include "mocks/mock_control.h"
 

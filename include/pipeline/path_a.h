@@ -8,9 +8,9 @@
 #ifndef PATH_A_H
 #define PATH_A_H
 
-#include "unlock/unlock.h"
+#include "pipeline/pipeline.h"
 
-/* The Path A processing module for registration with unlock_register(). */
-extern const unlock_module_t path_a_module;
+/* The Path A processing module for registration with pipeline_register(). */
+extern const pipeline_module_t path_a_module;
 
 #endif /* PATH_A_H */

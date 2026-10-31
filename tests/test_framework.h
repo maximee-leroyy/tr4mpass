@@ -46,7 +46,7 @@ extern int g_failures;
 /* Existing hardware-independent tests */
 void run_serial_parse_tests(void);
 void run_chip_db_tests(void);
-void run_unlock_probe_tests(void);
+void run_pipeline_probe_tests(void);
 void run_constant_tests(void);
 
 /* Phase 2 placeholders (filled in by other agents) */

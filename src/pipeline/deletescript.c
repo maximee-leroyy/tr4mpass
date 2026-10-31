@@ -9,8 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "unlock/deletescript.h"
-#include "unlock/afc_utils.h"
+#include "pipeline/deletescript.h"
+#include "pipeline/afc_utils.h"
 #include "util/log.h"
 
 #define LOG_TAG "[deletescript]"

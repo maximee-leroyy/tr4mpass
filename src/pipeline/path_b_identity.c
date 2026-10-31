@@ -12,7 +12,7 @@
 #include <libusb.h>
 #include "compat/libirecovery_compat.h"
 
-#include "unlock/path_b.h"
+#include "pipeline/path_b.h"
 #include "device/usb_dfu.h"
 #include "util/usb_helpers.h"
 #include "util/log.h"

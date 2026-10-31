@@ -1,37 +1,37 @@
 /*
- * unlock.c -- Module registry implementation.
+ * pipeline.c -- Module registry implementation.
  *
  * Static array of registered modules. Selection iterates the list and
  * returns the first module whose probe() returns 1.
  */
 
 #include <string.h>
-#include "unlock/unlock.h"
+#include "pipeline/pipeline.h"
 #include "util/log.h"
 
-static unlock_module_t g_modules[UNLOCK_MAX_MODULES];
+static pipeline_module_t g_modules[PIPELINE_MAX_MODULES];
 static int g_module_count = 0;
 
-int unlock_register(const unlock_module_t *mod)
+int pipeline_register(const pipeline_module_t *mod)
 {
     if (!mod || !mod->probe || !mod->execute) {
         log_error("[module] Invalid module (missing callbacks)");
         return -1;
     }
 
-    if (g_module_count >= UNLOCK_MAX_MODULES) {
-        log_error("[module] Module registry full (%d max)", UNLOCK_MAX_MODULES);
+    if (g_module_count >= PIPELINE_MAX_MODULES) {
+        log_error("[module] Module registry full (%d max)", PIPELINE_MAX_MODULES);
         return -1;
     }
 
-    memcpy(&g_modules[g_module_count], mod, sizeof(unlock_module_t));
+    memcpy(&g_modules[g_module_count], mod, sizeof(pipeline_module_t));
     g_module_count++;
 
     log_info("[module] Registered module: %s", mod->name);
     return 0;
 }
 
-const unlock_module_t *unlock_select(device_info_t *dev)
+const pipeline_module_t *pipeline_select(device_info_t *dev)
 {
     if (!dev) return NULL;
 
@@ -55,7 +55,7 @@ const unlock_module_t *unlock_select(device_info_t *dev)
     return NULL;
 }
 
-int unlock_execute(const unlock_module_t *mod, device_info_t *dev)
+int pipeline_execute(const pipeline_module_t *mod, device_info_t *dev)
 {
     if (!mod) {
         log_error("[module] No module selected");
@@ -70,7 +70,7 @@ int unlock_execute(const unlock_module_t *mod, device_info_t *dev)
     return mod->execute(dev);
 }
 
-void unlock_list(void)
+void pipeline_list(void)
 {
     log_info("[module] %d registered module(s):", g_module_count);
     for (int i = 0; i < g_module_count; i++) {
@@ -79,7 +79,7 @@ void unlock_list(void)
     }
 }
 
-int unlock_count(void)
+int pipeline_count(void)
 {
     return g_module_count;
 }

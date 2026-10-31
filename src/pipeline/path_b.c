@@ -18,9 +18,9 @@
 #include <libimobiledevice/libimobiledevice.h>
 #include <libirecovery.h>
 
-#include "unlock/path_b.h"
-#include "unlock/signal.h"
-#include "unlock/deletescript.h"
+#include "pipeline/path_b.h"
+#include "pipeline/signal.h"
+#include "pipeline/deletescript.h"
 #include "activation/activation.h"
 #include "activation/session.h"
 #include "activation/record.h"
@@ -41,7 +41,7 @@
 static int path_b_probe(device_info_t *dev);
 static int path_b_execute(device_info_t *dev);
 
-const unlock_module_t path_b_module = {
+const pipeline_module_t path_b_module = {
     .name        = "path_b_a12plus",
     .description = "A12+ path via identity manipulation + session activation",
     .probe       = path_b_probe,

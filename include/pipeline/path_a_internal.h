@@ -5,8 +5,8 @@
  * Not part of the public API. Include only within the processing module.
  */
 
-#ifndef UNLOCK_PATH_A_INTERNAL_H
-#define UNLOCK_PATH_A_INTERNAL_H
+#ifndef PIPELINE_PATH_A_INTERNAL_H
+#define PIPELINE_PATH_A_INTERNAL_H
 
 #include "device/device.h"
 
@@ -14,4 +14,4 @@ int path_a_load_ramdisk(device_info_t *dev);
 int path_a_deliver(device_info_t *dev);
 int path_a_replace_mobileactivationd(device_info_t *dev);
 
-#endif /* UNLOCK_PATH_A_INTERNAL_H */
+#endif /* PIPELINE_PATH_A_INTERNAL_H */

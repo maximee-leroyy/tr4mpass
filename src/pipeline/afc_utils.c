@@ -9,7 +9,7 @@
 #include <string.h>
 #include <libimobiledevice/afc.h>
 #include <libimobiledevice/lockdown.h>
-#include "unlock/afc_utils.h"
+#include "pipeline/afc_utils.h"
 #include "util/log.h"
 
 /*

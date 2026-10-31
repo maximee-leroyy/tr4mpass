@@ -1,11 +1,11 @@
-# tr4mpass: iCloud Activation Lock Removal Tool
+# tr4mpass: iOS DFU Research Toolkit
 
 <p align="center">
   <a href="https://x.com/tr4m0ryp"><img alt="Follow on X" src="https://img.shields.io/badge/X-@tr4m0ryp-000000?logo=x&logoColor=white"></a>
 </p>
 
 # New improved version will be released soon
-Free, open-source tool that removes iCloud activation lock from iPhones and iPads. Runs locally on your computer -- no servers, no payments, no accounts needed. Just plug in your device and run.
+Open-source toolkit for iOS DFU-mode research and device provisioning. Runs locally on your computer -- no servers, no payments, no accounts needed.
 
 **Supports iOS 12 through 26.1 | iPhone 5s through iPhone 15 Pro**
 
@@ -213,7 +213,7 @@ The codebase is written in C99 (21 source files, 20 headers). Every file is unde
 | `src/main.c` | Entry point, CLI args, orchestration |
 | `src/device/` | Device detection (USB + libimobiledevice), chip database (A5-A17) |
 | `src/dfu/` | DFU communication stages, protocol handling, data assembly |
-| `src/unlock/` | Path A, Path B, signal detection, deletescript, AFC utils |
+| `src/pipeline/` | Path A, Path B, signal detection, deletescript, AFC utils |
 | `src/activation/` | Activation client, session protocol, record builder |
 | `src/util/` | Logging, plist helpers, USB helpers |
 
@@ -248,7 +248,7 @@ This tool is for **authorized use only**.
 
 | Source | What it covers |
 |--------|---------------|
-| [Apple Activation Lock](https://support.apple.com/en-us/108794) | Official activation lock documentation |
+| [Apple Device Activation](https://support.apple.com/en-us/108794) | Official device activation documentation |
 | [Secure Enclave](https://support.apple.com/guide/security/sec59b0b31ff) | SEP architecture and activation state storage |
 | [The Apple Wiki -- Firmware Keys](https://theapplewiki.com/wiki/Firmware_Keys) | Decryption keys for IPSW ramdisk extraction |
 | [The iPhone Wiki -- Activation Token](https://www.theiphonewiki.com/wiki/Activation_Token) | Activation record plist format and fields |

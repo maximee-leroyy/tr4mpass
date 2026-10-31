@@ -5,7 +5,7 @@
  * monolithic tests/test_sections.c has been split into:
  *   - test_parsing.c        -- DFU serial parsing
  *   - test_chip_db.c        -- Chip database
- *   - test_unlock_probe.c   -- Module probe/select
+ *   - test_pipeline_probe.c   -- Module probe/select
  *   - test_constants.c      -- Compile-time constants
  *   - test_cert_extract.c   -- (Phase 2) cert extraction
  *   - test_signer.c         -- (Phase 2) ECDSA signer
@@ -35,7 +35,7 @@ int main(void)
 
     run_serial_parse_tests();
     run_chip_db_tests();
-    run_unlock_probe_tests();
+    run_pipeline_probe_tests();
     run_constant_tests();
     run_cert_extract_tests();
     run_signer_tests();

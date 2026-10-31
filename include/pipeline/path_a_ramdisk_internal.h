@@ -5,8 +5,8 @@
  * Internal to the processing module; not part of the public API.
  */
 
-#ifndef UNLOCK_PATH_A_RAMDISK_INTERNAL_H
-#define UNLOCK_PATH_A_RAMDISK_INTERNAL_H
+#ifndef PIPELINE_PATH_A_RAMDISK_INTERNAL_H
+#define PIPELINE_PATH_A_RAMDISK_INTERNAL_H
 
 /*
  * poll_ssh_ready -- wait until a TCP connection to 127.0.0.1:<port>
@@ -21,4 +21,4 @@
  */
 int path_a_ramdisk_poll_ssh(int port, int timeout_sec);
 
-#endif /* UNLOCK_PATH_A_RAMDISK_INTERNAL_H */
+#endif /* PIPELINE_PATH_A_RAMDISK_INTERNAL_H */
