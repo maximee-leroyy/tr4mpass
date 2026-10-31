@@ -61,18 +61,26 @@ fi
 
 main() {
     print_banner
+
+    msg_info "[etape 1/5] Verification du systeme et des dependances"
     detect_os
     install_deps
+
+    msg_info "[etape 2/5] Compilation de tr4mpass"
     build_project
 
     echo ""
     echo "----------------------------------------"
 
+    msg_info "[etape 3/5] Attente de l'appareil en USB (normal ou DFU)"
     if ! wait_for_device; then
+        msg_err "[etape 3/5] ECHEC : aucun appareil detecte"
         msg_info "Tip: Check your USB cable and try a different port."
         exit 1
     fi
+    msg_ok "[etape 3/5] Appareil detecte en mode ${DEVICE_MODE:-inconnu}"
 
+    msg_info "[etape 4/5] Lecture des informations et verification de la compatibilite"
     # Only parse detailed info if device is in normal mode
     # (DFU mode devices cannot be queried via lockdownd).
     if [ "$DEVICE_MODE" = "normal" ]; then
@@ -120,7 +128,7 @@ main() {
     fi
 
     echo ""
-    msg_info "Starting tr4mpass..."
+    msg_info "[etape 5/5] Lancement de tr4mpass"
     echo ""
 
     # Final validation before exec.
@@ -150,7 +158,7 @@ main() {
     local has_cpid=0
     local has_ecid=0
     local arg
-    for arg in "${run_args[@]}"; do
+    for arg in "${run_args[@]+"${run_args[@]}"}"; do
         case "$arg" in
             --cpid|--cpid=*) has_cpid=1 ;;
             --ecid|--ecid=*) has_ecid=1 ;;
@@ -165,11 +173,34 @@ main() {
         fi
     fi
 
+    # On macOS, AMDRadioUI and AMPDevicesAgent monitor USB and claim the DFU
+    # IOService. When the heap spray makes the device temporarily unresponsive,
+    # macOS hands ownership to these daemons; stage 4 then gets
+    # "no connection to an IOService". Kill them for the duration of the exploit.
+    if [ "$(uname)" = "Darwin" ]; then
+        pkill -f AMDRadioUI   2>/dev/null || true
+        pkill -f AMPDevicesAgent 2>/dev/null || true
+        pkill -f AMPArtworkAgent 2>/dev/null || true
+    fi
+
     # Run binary (not exec so we can clean up usbipd afterwards).
-    "$BINARY" "${run_args[@]}"
-    _rc=$?
+    _rc=0
+    "$BINARY" "${run_args[@]+"${run_args[@]}"}" || _rc=$?
     stop_usbipd_auto_attach
+    if [ "$_rc" -eq 0 ]; then
+        msg_ok "[etape 5/5] tr4mpass termine avec succes (code 0)"
+    else
+        msg_err "[etape 5/5] tr4mpass a echoue (code $_rc). Lis les lignes [ERROR] juste au-dessus"
+    fi
     exit $_rc
 }
+
+# checkm8 needs to detach the macOS kernel USB driver, which requires root.
+# Re-exec under sudo automatically if not already root.
+if [ "$(uname)" = "Darwin" ] && [ "$(id -u)" -ne 0 ]; then
+    echo "[*] macOS: libusb requires root to capture the USB device for checkm8."
+    echo "[*] Re-running with sudo..."
+    exec sudo "$0" "$@"
+fi
 
 main "$@"
