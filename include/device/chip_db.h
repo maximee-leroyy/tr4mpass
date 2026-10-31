@@ -6,16 +6,16 @@
 /*
  * chip_info_t -- static descriptor for a known Apple SoC variant.
  *
- * All memory addresses and exploit parameters are sourced from gaster
- * (github.com/0x7ff/gaster). Fields are 0 when unused for a given chip.
+ * All memory addresses and processing parameters are sourced from
+ * SecureROM analysis. Fields are 0 when unused for a given chip.
  */
 typedef struct {
     uint32_t    cpid;
     const char *name;               /* "A7", "A8", ..., "A17"            */
     const char *marketing;          /* "iPhone 5s", "iPhone X", etc.     */
-    int         checkm8_vulnerable; /* 1 = A5-A11, 0 = A12+             */
+    int         checkm8_vulnerable; /* 1 = A5-A11 (Path A), 0 = A12+    */
 
-    /* Exploit config */
+    /* DFU config */
     uint16_t config_large_leak;     /* heap spray iterations (0 = no-leak path) */
     uint16_t config_overwrite_pad;  /* overwrite padding size                   */
     uint16_t config_hole;           /* hole count for newer chips (0 if unused) */
@@ -61,8 +61,8 @@ const chip_info_t *chip_db_lookup(uint32_t cpid);
 const char *chip_db_name(uint32_t cpid);
 
 /*
- * chip_db_is_checkm8_vulnerable -- return 1 if the CPID is checkm8-
- *                                  vulnerable (A5-A11), 0 otherwise.
+ * chip_db_is_checkm8_vulnerable -- return 1 if the CPID supports
+ *                                  checkm8 processing (A5-A11), 0 otherwise.
  */
 int chip_db_is_checkm8_vulnerable(uint32_t cpid);
 

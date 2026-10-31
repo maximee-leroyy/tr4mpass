@@ -12,9 +12,9 @@
 #include "device/device.h"
 #include "device/usb_dfu.h"
 #include "device/chip_db.h"
-#include "bypass/bypass.h"
-#include "bypass/path_a.h"
-#include "bypass/path_b.h"
+#include "unlock/unlock.h"
+#include "unlock/path_a.h"
+#include "unlock/path_b.h"
 #include "activation/session.h"
 #include "activation/activation.h"
 #include "util/log.h"
@@ -39,7 +39,7 @@ static void print_banner(void)
 {
     printf("========================================\n"
            "  tr4mpass v%s\n"
-           "  Activation lock bypass research tool\n"
+           "  Activation lock removal tool\n"
            "========================================\n\n", TR4MPASS_VERSION);
 }
 
@@ -139,8 +139,8 @@ static int parse_args(int argc, char *argv[], cli_opts_t *opts)
 
     /*
      * Silence getopt's own errno print for unknown flags -- the
-     * bypass-pipeline long options (handled later by
-     * cli_parse_bypass_flags) show up here as '?' and should not
+     * pipeline long options (handled later by
+     * cli_parse_unlock_flags) show up here as '?' and should not
      * abort the program.
      */
     opterr = 0;
@@ -179,7 +179,7 @@ static int parse_args(int argc, char *argv[], cli_opts_t *opts)
                           optopt == OPT_CPID ? "cpid" : "ecid");
                 return -1;
             }
-            /* unknown flag -- defer to cli_parse_bypass_flags */
+            /* unknown flag -- defer to cli_parse_unlock_flags */
             break;
         default:  print_usage(argv[0]); return -1;
         }
@@ -250,21 +250,21 @@ static void enrich_chip_info(device_info_t *dev)
     dev->checkm8_vulnerable = chip->checkm8_vulnerable;
     log_debug("Chip: %s (CPID 0x%04X) -- checkm8 %s",
               chip->name, chip->cpid,
-              chip->checkm8_vulnerable ? "vulnerable" : "not vulnerable");
+              chip->checkm8_vulnerable ? "compatible" : "not compatible");
 }
 
 static void register_modules(void)
 {
-    if (bypass_register(&path_a_module) < 0)
+    if (unlock_register(&path_a_module) < 0)
         log_warn("Failed to register Path A module");
-    if (bypass_register(&path_b_module) < 0)
+    if (unlock_register(&path_b_module) < 0)
         log_warn("Failed to register Path B module");
-    log_debug("Registered %d bypass module(s)", bypass_count());
+    log_debug("Registered %d module(s)", unlock_count());
 }
 
 static void print_module_diagnostics(const device_info_t *dev)
 {
-    log_error("No compatible bypass module for this device");
+    log_error("No compatible module for this device");
     log_error("  DFU=%s CPID=0x%04X Chip=%s checkm8=%s Product=%s",
               dev->is_dfu_mode ? "YES" : "NO", dev->cpid,
               dev->chip_name[0] ? dev->chip_name : "(unknown)",
@@ -279,12 +279,12 @@ static void print_module_diagnostics(const device_info_t *dev)
         log_error("Chip CPID 0x%04X not in database.", dev->cpid);
 }
 
-static const bypass_module_t *select_module(device_info_t *dev,
+static const unlock_module_t *select_module(device_info_t *dev,
                                             const cli_opts_t *opts)
 {
     if (opts->force_path_a) { log_info("Path A forced"); return &path_a_module; }
     if (opts->force_path_b) { log_info("Path B forced"); return &path_b_module; }
-    const bypass_module_t *mod = bypass_select(dev);
+    const unlock_module_t *mod = unlock_select(dev);
     if (!mod) { print_module_diagnostics(dev); return NULL; }
     log_info("Auto-selected module: %s", mod->name);
     return mod;
@@ -309,11 +309,11 @@ int main(int argc, char *argv[])
     print_banner();
 
     /*
-     * Apply bypass-pipeline CLI overrides first so argv is still
+     * Apply pipeline CLI overrides first so argv is still
      * pristine (main.c's getopt_long below will permute argv).
      */
-    if (cli_parse_bypass_flags(argc, argv) != 0) {
-        log_error("Failed to parse bypass-pipeline CLI flags");
+    if (cli_parse_unlock_flags(argc, argv) != 0) {
+        log_error("Failed to parse pipeline CLI flags");
         return 1;
     }
 
@@ -453,9 +453,9 @@ ao_done:
     }
 
     register_modules();
-    bypass_list();
+    unlock_list();
 
-    const bypass_module_t *mod = select_module(&dev, &opts);
+    const unlock_module_t *mod = select_module(&dev, &opts);
     if (!mod) { cleanup(&dev); return 1; }
 
     if (opts.dry_run) {
@@ -467,13 +467,13 @@ ao_done:
 
     log_info("[etape 3/4] Module choisi : %s", mod->name);
     log_info("[etape 4/4] Execution du module %s", mod->name);
-    ret = bypass_execute(mod, &dev);
+    ret = unlock_execute(mod, &dev);
     if (ret == 0) {
         log_info("[etape 4/4] OK : module %s termine sans erreur", mod->name);
-        printf("\n[+] Bypass completed successfully.\n");
+        printf("\n[+] Process completed successfully.\n");
     } else {
         log_error("[etape 4/4] ECHEC : module %s a renvoye l'erreur %d. Regarde les lignes [ERROR] juste au-dessus", mod->name, ret);
-        printf("\n[-] Bypass failed (error %d).\n", ret);
+        printf("\n[-] Process failed (error %d).\n", ret);
     }
 
     cleanup(&dev);

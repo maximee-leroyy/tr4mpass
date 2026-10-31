@@ -1,7 +1,7 @@
 #!/bin/bash
-# tr4mpass -- Guided activation lock bypass wrapper
+# tr4mpass -- Guided activation lock removal wrapper
 # Cross-platform OS detection, dependency installation, device
-# detection, DFU guidance, and bypass execution.
+# detection, DFU guidance, and processing.
 #
 # The helper routines live in start-helpers.sh so this driver stays
 # under the project's 300-line-per-file limit.
@@ -29,7 +29,7 @@ fi
 
 # ------------------------------------------------------------------ #
 # pkg-config dependency list.  libssh2 is consumed by the Phase 2C   #
-# SSH jailbreak path; if the distro package is missing at build time #
+# SSH delivery path; if the distro package is missing at build time  #
 # the production link will fail with "library not found for -lssh2". #
 # Install hints are provided by the helpers for every platform.      #
 # ------------------------------------------------------------------ #
@@ -111,7 +111,7 @@ main() {
         echo "========================================"
         printf "  %-12s %s\n" "Mode:"   "DFU"
         printf "  %-12s %s\n" "Chip:"   "${DEV_CHIP_NAME:-(unknown)} (CPID: ${DEV_CPID:-(unknown)})"
-        printf "  %-12s %s\n" "Bypass:" "$DEV_BYPASS"
+        printf "  %-12s %s\n" "Method:" "$DEV_METHOD"
         printf "  %-12s %s\n" "Status:" "$DEV_STATUS"
         echo "========================================"
         echo ""
@@ -123,7 +123,7 @@ main() {
         fi
 
         msg_ok "Device is supported. Ready to proceed."
-        printf "${BOLD}Press Enter to start bypass...${RESET}"
+        printf "${BOLD}Press Enter to start process...${RESET}"
         read -r
     fi
 
@@ -148,7 +148,7 @@ main() {
     fi
 
     # On WSL, keep usbipd auto-attaching the device so it stays visible
-    # after each USB reset the exploit triggers.
+    # after each USB reset.
     start_usbipd_auto_attach
 
     # In DFU mode on some WSL/usbipd stacks, descriptor reads can intermittently
@@ -174,9 +174,9 @@ main() {
     fi
 
     # On macOS, AMDRadioUI and AMPDevicesAgent monitor USB and claim the DFU
-    # IOService. When the heap spray makes the device temporarily unresponsive,
-    # macOS hands ownership to these daemons; stage 4 then gets
-    # "no connection to an IOService". Kill them for the duration of the exploit.
+    # IOService. When the device becomes temporarily unresponsive, macOS hands
+    # ownership to these daemons; stage 4 then gets "no connection to an
+    # IOService". Kill them for the duration of the process.
     if [ "$(uname)" = "Darwin" ]; then
         pkill -f AMDRadioUI   2>/dev/null || true
         pkill -f AMPDevicesAgent 2>/dev/null || true
@@ -195,7 +195,7 @@ main() {
     exit $_rc
 }
 
-# checkm8 needs to detach the macOS kernel USB driver, which requires root.
+# DFU communication needs to detach the macOS kernel USB driver, which requires root.
 # Re-exec under sudo automatically if not already root.
 if [ "$(uname)" = "Darwin" ] && [ "$(id -u)" -ne 0 ]; then
     echo "[*] macOS: libusb requires root to capture the USB device for checkm8."

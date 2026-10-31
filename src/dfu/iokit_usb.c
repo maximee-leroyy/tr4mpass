@@ -1,0 +1,177 @@
+/* iokit_usb.c -- Direct IOKit USB backend for Apple Silicon EP0 protection */
+
+#if defined(__APPLE__)
+
+#include <string.h>
+#include <unistd.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/IOCFPlugIn.h>
+#include <IOKit/usb/IOUSBLib.h>
+#include <libusb.h>
+
+#include "dfu/iokit_usb.h"
+#include "util/log.h"
+
+static IOUSBDeviceInterface320 **g_device;
+static CFRunLoopSourceRef       g_async_source;
+static int                      g_active;
+
+int iokit_usb_activate(void)
+{
+    CFMutableDictionaryRef matching;
+    io_service_t serv;
+    IOCFPlugInInterface **plugin;
+    SInt32 score;
+    IOReturn kr;
+    int16_t vid = 0x05AC;
+    int16_t pid = 0x1227;
+    CFNumberRef cf_vid, cf_pid;
+
+    if (g_active)
+        return 0;
+
+    matching = IOServiceMatching(kIOUSBDeviceClassName);
+    if (!matching) {
+        log_error("iokit_usb: IOServiceMatching failed");
+        return -1;
+    }
+
+    cf_vid = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt16Type, &vid);
+    cf_pid = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt16Type, &pid);
+    CFDictionarySetValue(matching, CFSTR(kUSBVendorID), cf_vid);
+    CFDictionarySetValue(matching, CFSTR(kUSBProductID), cf_pid);
+    CFRelease(cf_vid);
+    CFRelease(cf_pid);
+
+    serv = IOServiceGetMatchingService(0, matching);
+    if (!serv) {
+        log_error("iokit_usb: DFU device not found (05ac:1227)");
+        return -1;
+    }
+
+    kr = IOCreatePlugInInterfaceForService(serv, kIOUSBDeviceUserClientTypeID,
+                                           kIOCFPlugInInterfaceID,
+                                           &plugin, &score);
+    IOObjectRelease(serv);
+    if (kr != kIOReturnSuccess || !plugin) {
+        log_error("iokit_usb: plugin interface failed: 0x%x", kr);
+        return -1;
+    }
+
+    kr = (*plugin)->QueryInterface(plugin,
+            CFUUIDGetUUIDBytes(kIOUSBDeviceInterfaceID320),
+            (LPVOID *)&g_device);
+    IODestroyPlugInInterface(plugin);
+    if (kr != kIOReturnSuccess || !g_device) {
+        log_error("iokit_usb: device interface failed: 0x%x", kr);
+        return -1;
+    }
+
+    kr = (*g_device)->USBDeviceOpen(g_device);
+    if (kr != kIOReturnSuccess) {
+        log_error("iokit_usb: USBDeviceOpen failed: 0x%x", kr);
+        (*g_device)->Release(g_device);
+        g_device = NULL;
+        return -1;
+    }
+
+    kr = (*g_device)->SetConfiguration(g_device, 1);
+    log_info("iokit_usb: SetConfiguration(1) ret=0x%x", kr);
+
+    kr = (*g_device)->CreateDeviceAsyncEventSource(g_device, &g_async_source);
+    if (kr == kIOReturnSuccess && g_async_source) {
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), g_async_source,
+                           kCFRunLoopDefaultMode);
+    }
+
+    g_active = 1;
+    log_info("iokit_usb: activated (direct IOKit backend, no libusb cancel)");
+    return 0;
+}
+
+void iokit_usb_deactivate(void)
+{
+    if (!g_active)
+        return;
+
+    if (g_async_source) {
+        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), g_async_source,
+                              kCFRunLoopDefaultMode);
+        CFRelease(g_async_source);
+        g_async_source = NULL;
+    }
+    if (g_device) {
+        (*g_device)->USBDeviceClose(g_device);
+        (*g_device)->Release(g_device);
+        g_device = NULL;
+    }
+    g_active = 0;
+    log_info("iokit_usb: deactivated");
+}
+
+int iokit_usb_is_active(void)
+{
+    return g_active;
+}
+
+int iokit_usb_ctrl_transfer(uint8_t bmRequestType, uint8_t bRequest,
+                            uint16_t wValue, uint16_t wIndex,
+                            void *data, uint16_t wLength,
+                            uint32_t timeout_ms)
+{
+    IOUSBDevRequestTO req;
+    IOReturn kr;
+
+    if (!g_active || !g_device)
+        return LIBUSB_ERROR_NO_DEVICE;
+
+    memset(&req, 0, sizeof(req));
+    req.bmRequestType = bmRequestType;
+    req.bRequest      = bRequest;
+    req.wValue        = wValue;
+    req.wIndex        = wIndex;
+    req.wLength       = wLength;
+    req.pData         = data;
+    req.completionTimeout = timeout_ms;
+    req.noDataTimeout     = timeout_ms;
+
+    kr = (*g_device)->DeviceRequestTO(g_device, &req);
+
+    if (kr == kIOReturnSuccess)
+        return (int)req.wLenDone;
+
+    if (kr == (IOReturn)0xe0004051) {
+        log_debug("iokit_usb: timeout (wLenDone=%u)", req.wLenDone);
+        return LIBUSB_ERROR_TIMEOUT;
+    }
+    if (kr == kIOUSBPipeStalled) {
+        log_debug("iokit_usb: STALL (wLenDone=%u)", req.wLenDone);
+        return LIBUSB_ERROR_PIPE;
+    }
+    if (kr == kIOReturnAborted) {
+        log_debug("iokit_usb: aborted (wLenDone=%u)", req.wLenDone);
+        return LIBUSB_ERROR_INTERRUPTED;
+    }
+
+    log_warn("iokit_usb: DeviceRequestTO failed: IOReturn=0x%x wLenDone=%u",
+             kr, req.wLenDone);
+    return LIBUSB_ERROR_OTHER;
+}
+
+int iokit_usb_reset_device(void)
+{
+    if (!g_active || !g_device)
+        return -1;
+    (*g_device)->ResetDevice(g_device);
+    return 0;
+}
+
+int iokit_usb_reenumerate(void)
+{
+    if (!g_active || !g_device)
+        return -1;
+    (*g_device)->USBDeviceReEnumerate(g_device, 0);
+    return 0;
+}
+
+#endif /* __APPLE__ */

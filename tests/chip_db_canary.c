@@ -14,10 +14,10 @@
  * "A10" -- not to freeze every character of every string.
  *
  * If a distro-packaged chip table has legitimately diverged from
- * this file's expectations, `make STRICT_CHIP_DB=0` bypasses the
+ * this file's expectations, `make STRICT_CHIP_DB=0` skips the
  * probe entirely (T5 "Chip-DB canary strictness" note).
  *
- * All rows must remain traceable to gaster.c line numbers -- see
+ * All rows must remain traceable to source line numbers -- see
  * include/device/chip_db_table.h and chip_db_table_rop.h.
  */
 
@@ -58,7 +58,7 @@ static const struct expected_row g_expected[] = {
     { 0x8011, 1, "A10X",    "iPad Pro" },
     { 0x8015, 1, "A11",     "iPhone" },
     { 0x8012, 1, "T2",      "T2" },
-    /* A12+ must be present but explicitly not checkm8-vulnerable. */
+    /* A12+ must be present but not checkm8-compatible. */
     { 0x8020, 0, "A12",     "iPhone" },
     { 0x8101, 0, "A14",     "iPhone" },
 };
@@ -115,8 +115,8 @@ int main(void)
     if (failed != 0) {
         fprintf(stderr,
                 "[chip-db-canary] FAIL: %zu divergence(s). Rebuild chip_db_table*.h\n"
-                "                 from gaster.c:519-808 (0x7ff/gaster) or\n"
-                "                 bypass with `make STRICT_CHIP_DB=0`.\n",
+                "                 from SecureROM analysis or\n"
+                "                 skip with `make STRICT_CHIP_DB=0`.\n",
                 failed);
         return 1;
     }

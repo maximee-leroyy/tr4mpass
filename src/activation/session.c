@@ -14,8 +14,8 @@
  * OFFLINE flow (what this tool implements, per design decision D2):
  *   Stages 1, 3, 5: same device-side plist commands
  *   Stages 2, 4: construct responses locally (no apple.com calls)
- *   Requires prior jailbreak (Path A) or identity manipulation (Path B)
- *   so mobileactivationd accepts locally-crafted responses.
+ *   Requires prior device preparation (Path A) or identity manipulation
+ *   (Path B) so mobileactivationd accepts locally-crafted responses.
  */
 
 #include <stdlib.h>
@@ -118,7 +118,7 @@ static plist_t build_offline_handshake(device_info_t *dev,
                             plist_new_data("", 0));
     }
 
-    /* serverKP: empty -- session encryption bypassed post-patch */
+    /* serverKP: empty -- session encryption not used */
     plist_dict_set_item(response, "serverKP",
                         plist_new_data("", 0));
 

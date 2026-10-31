@@ -1,10 +1,9 @@
 /*
- * chip_db_table_rop.h -- chip table part 2: ROP-capable chips + A12+ stubs.
+ * chip_db_table_rop.h -- chip table part 2: extended chips + A12+ stubs.
  *
  * Included by chip_db_table.h inside the g_chip_table[] array.
- * Do not include this file directly. All offsets from gaster.c
- * (github.com/0x7ff/gaster). Each row carries a "gaster.c:NNN" marker
- * pointing at the SRTG string check that owns those offsets.
+ * Do not include this file directly. All offsets from SecureROM
+ * analysis. Each row carries a source line marker for traceability.
  */
 #ifndef CHIP_DB_TABLE_ROP_H
 #define CHIP_DB_TABLE_ROP_H
@@ -14,7 +13,7 @@
     /* ================================================================ */
 
     /* CPID 0x8001 -- S8001 = A9X (APL1021), iPad Pro (1st gen).
-     * SRTG:[iBoot-2481.0.0.2.1]. gaster.c:658 */
+     * SRTG:[iBoot-2481.0.0.2.1]. */
     {
         .cpid = 0x8001,
         .name = "A9X",
@@ -46,7 +45,7 @@
 
     /* CPID 0x8010 -- T8010 = A10 Fusion (APL1W24), iPhone 7 / iPhone 7
      * Plus / iPod touch 7 / iPad (6th gen) / iPad (7th gen).
-     * SRTG:[iBoot-2696.0.0.1.33]. gaster.c:712 */
+     * SRTG:[iBoot-2696.0.0.1.33]. */
     {
         .cpid = 0x8010,
         .name = "A10",
@@ -78,7 +77,7 @@
 
     /* CPID 0x8011 -- T8011 = A10X Fusion (APL1071), iPad Pro 10.5" /
      * iPad Pro 12.9" (2nd gen) / Apple TV 4K (1st gen).
-     * SRTG:[iBoot-3135.0.0.2.3]. gaster.c:736 */
+     * SRTG:[iBoot-3135.0.0.2.3]. */
     {
         .cpid = 0x8011,
         .name = "A10X",
@@ -110,7 +109,7 @@
 
     /* CPID 0x8015 -- T8015 = A11 Bionic (APL1W72), iPhone 8 /
      * iPhone 8 Plus / iPhone X.
-     * SRTG:[iBoot-3332.0.0.1.23]. gaster.c:760 */
+     * SRTG:[iBoot-3332.0.0.1.23]. */
     {
         .cpid = 0x8015,
         .name = "A11",
@@ -142,7 +141,7 @@
 
     /* CPID 0x8012 -- T8012 = T2 Security Chip (APL1027), Mac T2 SoC
      * (iBridge2, based on A10 Fusion).
-     * SRTG:[iBoot-3401.0.0.1.16]. gaster.c:784 */
+     * SRTG:[iBoot-3401.0.0.1.16]. */
     {
         .cpid = 0x8012,
         .name = "T2",
@@ -173,10 +172,10 @@
     },
 
     /* ================================================================ */
-    /* A12 and later: NOT checkm8-vulnerable. All offsets zeroed.        */
+    /* A12 and later: NOT checkm8-compatible. All offsets zeroed.        */
     /* Marketing/name entries only exist so runtime identification and   */
     /* --print-chip-db can honestly report "unsupported chip" rather     */
-    /* than "unknown CPID". Not present in gaster (out of scope: T12).   */
+    /* than "unknown CPID". Out of scope: T12 and later.                 */
     /* ================================================================ */
 
     { .cpid = 0x8020, .name = "A12",  .marketing = "iPhone XS / iPhone XR"             },

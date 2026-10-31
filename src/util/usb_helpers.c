@@ -3,6 +3,10 @@
 #include "util/usb_helpers.h"
 #include "util/log.h"
 
+#if defined(__APPLE__)
+#include "dfu/iokit_usb.h"
+#endif
+
 /* Maximum retry attempts for transient USB errors (PIPE/STALL) */
 #define USB_PIPE_MAX_RETRIES  3
 
@@ -16,7 +20,7 @@
  * which is common during DFU operations and often clears on retry.
  *
  * NOTE: LIBUSB_ERROR_TIMEOUT is intentionally NOT retried here.
- * For checkm8 stage 2/3 async operations, timeouts are the intended
+ * For stage 2/3 async operations, timeouts are the intended
  * abort mechanism and must return immediately (no added latency).
  * For normal DFU operations (5000ms timeout), a real timeout means
  * the device is unresponsive -- retrying won't help.
@@ -37,6 +41,14 @@ int usb_ctrl_transfer(libusb_device_handle *dev,
 {
     int ret;
     int attempt;
+
+#if defined(__APPLE__)
+    if (iokit_usb_is_active()) {
+        return iokit_usb_ctrl_transfer(bmRequestType, bRequest,
+                                       wValue, wIndex, data, wLength,
+                                       timeout);
+    }
+#endif
 
     if (!dev)
         return LIBUSB_ERROR_INVALID_PARAM;
@@ -70,6 +82,15 @@ int usb_ctrl_transfer_no_data(libusb_device_handle *dev,
 {
     int ret;
     int attempt;
+
+#if defined(__APPLE__)
+    if (iokit_usb_is_active()) {
+        int r = iokit_usb_ctrl_transfer(bmRequestType, bRequest,
+                                        wValue, wIndex, NULL, 0,
+                                        timeout);
+        return (r >= 0) ? 0 : r;
+    }
+#endif
 
     if (!dev)
         return LIBUSB_ERROR_INVALID_PARAM;

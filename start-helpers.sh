@@ -23,7 +23,7 @@ print_banner() {
     printf "${BOLD}"
     echo "========================================"
     echo "  tr4mpass v0.2.0"
-    echo "  Activation lock bypass research tool"
+    echo "  Activation lock removal tool"
     echo "========================================"
     printf "${RESET}\n"
 }
@@ -235,7 +235,7 @@ install_deps() {
     if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
         msg_err "Still missing after install: ${MISSING_DEPS[*]}"
         msg_info "Please install them manually and re-run this script."
-        msg_info "  libssh2 is required for Phase 2C SSH jailbreak delivery."
+        msg_info "  libssh2 is required for Phase 2C SSH delivery."
         msg_info "  libcurl is required for Albert activation server calls."
         msg_info "  If either was just installed, re-running should pick it up."
         exit 1
@@ -349,16 +349,16 @@ check_wsl_usb_passthrough() {
 
 start_usbipd_auto_attach() {
     # On WSL, launch usbipd auto-attach in the background so the device
-    # is automatically re-attached after each USB reset during the exploit.
-    # This is critical for checkm8: the exploit intentionally resets the
-    # USB bus, and usbipd drops the attachment on every disconnect.
+    # is automatically re-attached after each USB reset during processing.
+    # The DFU protocol intentionally resets the USB bus, and usbipd drops
+    # the attachment on every disconnect.
     #
     # Uses --hardware-id 05ac:1227 (Apple DFU VID:PID) so we don't need
     # to know the bus ID.  Runs via powershell.exe (Windows-side) with
     # the process in a hidden window so there's no visible popup.
     #
     # Returns the Windows PID in USBIPD_AUTOATTACH_PID, or empty string
-    # on failure (non-fatal -- exploit may still succeed on first try).
+    # on failure (non-fatal -- process may still succeed on first try).
     USBIPD_AUTOATTACH_PID=""
     if [ "$DETECTED_OS" != "wsl" ]; then
         return 0
@@ -375,7 +375,7 @@ start_usbipd_auto_attach() {
     if [ -n "$USBIPD_AUTOATTACH_PID" ]; then
         msg_ok "usbipd auto-attach running (PID $USBIPD_AUTOATTACH_PID)."
     else
-        msg_warn "Could not start usbipd auto-attach; exploit retries may fail if device resets."
+        msg_warn "Could not start usbipd auto-attach; retries may fail if device resets."
     fi
 }
 
@@ -463,11 +463,11 @@ parse_device_info() {
 
     DEV_MODEL="" DEV_CHIP_NAME="" DEV_CPID="" DEV_ECID="" DEV_IOS=""
     DEV_SERIAL="" DEV_IMEI="" DEV_CHECKM8="" DEV_DFU=""
-    DEV_BYPASS="(none)"
+    DEV_METHOD="(none)"
     DEV_STATUS="UNSUPPORTED"
 
     # On Linux/WSL DFU, prefer lsusb directly so the wrapper does not
-    # consume a libusb session before the real exploit starts.
+    # consume a libusb session before the real process starts.
     if [ "$DEVICE_MODE" = "dfu" ] && command -v lsusb >/dev/null 2>&1; then
         dfu_serial_fallback="$(
             lsusb -v -d 05ac:1227 2>/dev/null |
@@ -479,7 +479,7 @@ parse_device_info() {
             DEV_CPID="$(printf '%s\n' "$dfu_serial_fallback" | sed -n 's/.*CPID:\([0-9A-Fa-f]\+\).*/0x\1/p')"
             DEV_ECID="$(printf '%s\n' "$dfu_serial_fallback" | sed -n 's/.*ECID:\([0-9A-Fa-f]\+\).*/0x\1/p')"
             DEV_DFU="YES"
-            msg_warn "Using DFU serial info from lsusb to avoid a pre-exploit libusb probe."
+            msg_warn "Using DFU serial info from lsusb to avoid a pre-process libusb probe."
         fi
     fi
 
@@ -487,12 +487,12 @@ parse_device_info() {
         case "${DEV_CPID#0x}" in
             8950|8955|8947|7002|8002|8960|7000|7001|8000|8003|8001|8010|8011|8012|8015)
                 DEV_CHECKM8="YES"
-                DEV_BYPASS="Path A (checkm8, A5-A11)"
+                DEV_METHOD="Path A (checkm8, A5-A11)"
                 DEV_STATUS="SUPPORTED"
                 ;;
             *)
                 DEV_CHECKM8="NO"
-                DEV_BYPASS="Path B (identity, A12+)"
+                DEV_METHOD="Path B (identity, A12+)"
                 DEV_STATUS="SUPPORTED"
                 ;;
         esac
@@ -519,7 +519,7 @@ parse_device_info() {
     DEV_DFU="$(echo "$output"       | sed -nE 's/^[[:space:]]*DFU Mode:[[:space:]]+//p'     | head -n1)"
 
     # Fallback: if libusb string descriptor reads time out, parse CPID/ECID
-    # from lsusb's iSerial line so the exploit can proceed with --cpid/--ecid.
+    # from lsusb's iSerial line so the process can proceed with --cpid/--ecid.
     if [ "$DEVICE_MODE" = "dfu" ] &&
        { [ -z "$DEV_CPID" ] || [ "$DEV_CPID" = "0x0000" ]; } &&
        command -v lsusb >/dev/null 2>&1; then
@@ -537,13 +537,13 @@ parse_device_info() {
     fi
 
     if [ "$DEV_CHECKM8" = "YES" ]; then
-        DEV_BYPASS="Path A (checkm8, A5-A11)"
+        DEV_METHOD="Path A (checkm8, A5-A11)"
         DEV_STATUS="SUPPORTED"
     elif [ -n "$DEV_CPID" ] && [ "$DEV_CPID" != "0x0000" ]; then
-        DEV_BYPASS="Path B (identity, A12+)"
+        DEV_METHOD="Path B (identity, A12+)"
         DEV_STATUS="SUPPORTED"
     else
-        DEV_BYPASS="(none)"
+        DEV_METHOD="(none)"
         DEV_STATUS="UNSUPPORTED"
     fi
     return 0
@@ -560,7 +560,7 @@ display_device_info() {
     printf "  %-12s %s\n" "Serial:"  "${DEV_SERIAL:-(unknown)}"
     printf "  %-12s %s\n" "IMEI:"    "${DEV_IMEI:-(none / WiFi-only)}"
     printf "  %-12s %s\n" "Mode:"    "${DEVICE_MODE:-unknown}"
-    printf "  %-12s %s\n" "Bypass:"  "$DEV_BYPASS"
+    printf "  %-12s %s\n" "Method:"  "$DEV_METHOD"
     printf "  %-12s %s\n" "Status:"  "$DEV_STATUS"
     echo "========================================"
     echo ""
@@ -652,9 +652,9 @@ handle_dfu_requirement() {
         return 0
     fi
     if [ "$DEV_CHECKM8" = "YES" ]; then
-        wait_for_dfu_entry "Path A (checkm8) requires DFU mode, but device is in normal mode."
+        wait_for_dfu_entry "Path A requires DFU mode, but device is in normal mode."
     elif [ "$DEV_STATUS" = "SUPPORTED" ]; then
-        wait_for_dfu_entry "Path B (A12+ bypass) requires DFU mode, but device is in normal mode."
+        wait_for_dfu_entry "Path B (A12+) requires DFU mode, but device is in normal mode."
     fi
 }
 
@@ -670,6 +670,6 @@ gate_support() {
 
     msg_ok "Device is supported. Ready to proceed."
     echo ""
-    printf "${BOLD}Press Enter to start bypass...${RESET}"
+    printf "${BOLD}Press Enter to start process...${RESET}"
     read -r
 }

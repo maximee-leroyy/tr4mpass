@@ -52,7 +52,7 @@ void e2e_fixture_teardown(e2e_fixture_t *fx);
 
 /*
  * e2e_make_device_path_a -- Populate a device_info_t for a Path A
- * (checkm8-vulnerable) device with all identity fields filled in.  The
+ * (checkm8-compatible) device with all identity fields filled in.  The
  * device is returned by value so the caller owns the storage.
  */
 device_info_t e2e_make_device_path_a(void);

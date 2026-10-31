@@ -2,14 +2,12 @@
 #define CHIP_DB_TABLE_H
 
 /*
- * chip_db_table.h -- static chip table with real gaster offsets (part 1).
+ * chip_db_table.h -- static chip table with SecureROM offsets (part 1).
  *
  * Included by chip_db.c only. Do not include this file elsewhere.
  * All CPIDs, iBoot SRTG strings and memory offsets are sourced from
- * gaster (github.com/0x7ff/gaster) -- specifically the SecureROM
- * SRTG -> offset dispatch block in gaster.c:519-808. Each row carries
- * a "gaster.c:NNN" marker pointing at the SRTG string check that
- * assigns its offsets, so future audits can grep the source of truth.
+ * SecureROM analysis. Each row carries a source line marker so future
+ * audits can grep the source of truth.
  *
  * Marketing / .name strings are the human-readable identity of the
  * SoC and are cross-checked against theiphonewiki.com/wiki/CHIP. They
@@ -28,7 +26,7 @@ static const chip_info_t g_chip_table[] = {
     /* ================================================================ */
 
     /* CPID 0x8950 -- S5L8950 = A6 (APL0598), iPhone 5 / iPhone 5c.
-     * SRTG:[iBoot-1145.3]. gaster.c:519 */
+     * SRTG:[iBoot-1145.3]. */
     {
         .cpid = 0x8950,
         .name = "A6",
@@ -50,7 +48,7 @@ static const chip_info_t g_chip_table[] = {
     },
 
     /* CPID 0x8955 -- S5L8955 = A6X (APL5598), iPad 4th gen.
-     * SRTG:[iBoot-1145.3.3]. gaster.c:534 */
+     * SRTG:[iBoot-1145.3.3]. */
     {
         .cpid = 0x8955,
         .name = "A6X",
@@ -73,7 +71,7 @@ static const chip_info_t g_chip_table[] = {
 
     /* CPID 0x8947 -- S5L8947 = A5 Rev B (APL2498), Apple TV 3rd gen rev A
      * (AppleTV3,2). Single-core 32 nm die shrink of A5.
-     * SRTG:[iBoot-1458.2]. gaster.c:549 */
+     * SRTG:[iBoot-1458.2]. */
     {
         .cpid = 0x8947,
         .name = "S5L8947",
@@ -95,7 +93,7 @@ static const chip_info_t g_chip_table[] = {
     },
 
     /* CPID 0x7002 -- S1P (APL0778), Apple Watch Series 1 / Series 2.
-     * SRTG:[iBoot-2098.0.0.2.4]. gaster.c:610 */
+     * SRTG:[iBoot-2098.0.0.2.4]. */
     {
         .cpid = 0x7002,
         .name = "S1P",
@@ -117,7 +115,7 @@ static const chip_info_t g_chip_table[] = {
 
     /* CPID 0x8002 -- T8002. Shared package family used by S1P/S2 (Watch
      * Series 1/2) and T1 (MacBook Pro Touch Bar controller).
-     * SRTG:[iBoot-2651.0.0.1.31]. gaster.c:682 */
+     * SRTG:[iBoot-2651.0.0.1.31]. */
     {
         .cpid = 0x8002,
         .name = "S1P/S2/T1",
@@ -140,7 +138,7 @@ static const chip_info_t g_chip_table[] = {
 
     /* CPID 0x8004 -- T8004 = S3, Apple Watch Series 3 (both GPS and
      * GPS+Cellular variants share this CPID).
-     * SRTG:[iBoot-2651.0.0.3.3]. gaster.c:697 */
+     * SRTG:[iBoot-2651.0.0.3.3]. */
     {
         .cpid = 0x8004,
         .name = "S3",
@@ -167,7 +165,7 @@ static const chip_info_t g_chip_table[] = {
 
     /* CPID 0x8960 -- S5L8960 = A7 (APL0698), iPhone 5s / iPad Air /
      * iPad mini 2 / iPad mini 3. Apple's first ARM64 SoC.
-     * SRTG:[iBoot-1704.10]. gaster.c:564 */
+     * SRTG:[iBoot-1704.10]. */
     {
         .cpid = 0x8960,
         .name = "A7",
@@ -191,7 +189,7 @@ static const chip_info_t g_chip_table[] = {
 
     /* CPID 0x7000 -- S5L8960-derived A8 variant (APL1011), iPod touch 6G
      * / iPad mini 4.
-     * SRTG:[iBoot-1992.0.0.1.19]. gaster.c:595 */
+     * SRTG:[iBoot-1992.0.0.1.19]. */
     {
         .cpid = 0x7000,
         .name = "A8",
@@ -213,7 +211,7 @@ static const chip_info_t g_chip_table[] = {
     },
 
     /* CPID 0x7001 -- A8X (APL1012), iPad Air 2.
-     * SRTG:[iBoot-1991.0.0.2.16]. gaster.c:580 */
+     * SRTG:[iBoot-1991.0.0.2.16]. */
     {
         .cpid = 0x7001,
         .name = "A8X",
@@ -236,7 +234,7 @@ static const chip_info_t g_chip_table[] = {
 
     /* CPID 0x8000 -- S8000 = A9 Samsung 14 nm (APL0898), iPhone 6s /
      * iPhone 6s Plus / iPhone SE (1st gen).
-     * SRTG:[iBoot-2234.0.0.3.3]. gaster.c:641 */
+     * SRTG:[iBoot-2234.0.0.3.3]. */
     {
         .cpid = 0x8000,
         .name = "A9",
@@ -262,7 +260,7 @@ static const chip_info_t g_chip_table[] = {
     /* CPID 0x8003 -- S8003 = A9 TSMC 16 nm (APL1022), iPhone 6s /
      * iPhone 6s Plus / iPhone SE (1st gen). Offset payload matches
      * 0x8000; only the foundry-identifying CPID differs.
-     * SRTG:[iBoot-2234.0.0.2.22]. gaster.c:624 */
+     * SRTG:[iBoot-2234.0.0.2.22]. */
     {
         .cpid = 0x8003,
         .name = "A9",
