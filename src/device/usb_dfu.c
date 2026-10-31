@@ -218,12 +218,12 @@ int usb_dfu_reopen(libusb_device_handle **handle, uint8_t *iserial_out)
     if (!g_ctx)
         return -1;
 
-    for (attempt = 0; attempt < 8; attempt++) {
+    for (attempt = 0; attempt < 20; attempt++) {
         libusb_device **devs = NULL;
         ssize_t count, i;
 
         if (attempt > 0)
-            usleep(25000); /* 25 ms between retries */
+            usleep(attempt < 4 ? 50000 : 250000); /* 50ms first 3, then 250ms */
 
         count = libusb_get_device_list(g_ctx, &devs);
         if (count < 0)
