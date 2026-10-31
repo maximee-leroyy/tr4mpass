@@ -9,6 +9,12 @@ PKG_LIBS = libimobiledevice-1.0 libirecovery-1.0 libusb-1.0 \
 CFLAGS  += $(shell pkg-config --cflags $(PKG_LIBS) 2>/dev/null)
 LDFLAGS += $(shell pkg-config --libs   $(PKG_LIBS) 2>/dev/null)
 
+# macOS: IOKit + CoreFoundation for direct DeviceRequestTO in checkm8 stage 4
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+    LDFLAGS += -framework IOKit -framework CoreFoundation
+endif
+
 $(foreach lib,$(PKG_LIBS),$(if $(shell pkg-config --exists $(lib) 2>/dev/null && echo ok),,$(warning Library $(lib) not found by pkg-config)))
 
 # ------------------------------------------------------------------ #
