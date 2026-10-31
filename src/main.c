@@ -327,20 +327,20 @@ int main(int argc, char *argv[])
 
     /* libcurl global state is set up once here and torn down at exit. */
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
-        log_error("libcurl: curl_global_init a echoue");
+        log_error("libcurl: curl_global_init failed");
         return 1;
     }
     atexit(curl_global_cleanup);
 
-    log_info("[etape 1/4] Initialisation du sous-systeme USB");
+    log_info("[step 1/4] Initializing USB subsystem");
     if (usb_dfu_init() < 0) {
-        log_error("[etape 1/4] ECHEC : initialisation USB impossible (libusb)");
+        log_error("[step 1/4] FAILED: could not initialize USB (libusb)");
         return 1;
     }
 
-    log_info("[etape 2/4] Detection de l'appareil (mode DFU d'abord, puis mode normal)");
+    log_info("[step 2/4] Detecting device (DFU mode first, then normal mode)");
     if (detect_device(&dev, &opts) < 0) {
-        log_error("[etape 2/4] ECHEC : aucun appareil detecte. Verifie le cable USB et le mode (DFU ou normal)");
+        log_error("[step 2/4] FAILED: no device detected. Check the USB cable and the mode (DFU or normal)");
         usb_dfu_cleanup();
         return 1;
     }
@@ -383,7 +383,7 @@ int main(int argc, char *argv[])
 
     enrich_chip_info(&dev);
     device_print_info(&dev);
-    log_info("[etape 2/4] OK : appareil identifie (mode %s, CPID=0x%04X, ECID=0x%llX)",
+    log_info("[step 2/4] OK: device identified (mode %s, CPID=0x%04X, ECID=0x%llX)",
              dev.handle ? "normal" : "DFU",
              dev.cpid, (unsigned long long)dev.ecid);
 
@@ -465,14 +465,14 @@ ao_done:
         return 0;
     }
 
-    log_info("[etape 3/4] Module choisi : %s", mod->name);
-    log_info("[etape 4/4] Execution du module %s", mod->name);
+    log_info("[step 3/4] Selected module: %s", mod->name);
+    log_info("[step 4/4] Running module %s", mod->name);
     ret = unlock_execute(mod, &dev);
     if (ret == 0) {
-        log_info("[etape 4/4] OK : module %s termine sans erreur", mod->name);
+        log_info("[step 4/4] OK: module %s finished without error", mod->name);
         printf("\n[+] Process completed successfully.\n");
     } else {
-        log_error("[etape 4/4] ECHEC : module %s a renvoye l'erreur %d. Regarde les lignes [ERROR] juste au-dessus", mod->name, ret);
+        log_error("[step 4/4] FAILED: module %s returned error %d. Check the [ERROR] lines just above", mod->name, ret);
         printf("\n[-] Process failed (error %d).\n", ret);
     }
 

@@ -62,25 +62,25 @@ fi
 main() {
     print_banner
 
-    msg_info "[etape 1/5] Verification du systeme et des dependances"
+    msg_info "[step 1/5] Checking system and dependencies"
     detect_os
     install_deps
 
-    msg_info "[etape 2/5] Compilation de tr4mpass"
+    msg_info "[step 2/5] Building tr4mpass"
     build_project
 
     echo ""
     echo "----------------------------------------"
 
-    msg_info "[etape 3/5] Attente de l'appareil en USB (normal ou DFU)"
+    msg_info "[step 3/5] Waiting for device over USB (normal or DFU)"
     if ! wait_for_device; then
-        msg_err "[etape 3/5] ECHEC : aucun appareil detecte"
+        msg_err "[step 3/5] FAILED: no device detected"
         msg_info "Tip: Check your USB cable and try a different port."
         exit 1
     fi
-    msg_ok "[etape 3/5] Appareil detecte en mode ${DEVICE_MODE:-inconnu}"
+    msg_ok "[step 3/5] Device detected in mode ${DEVICE_MODE:-unknown}"
 
-    msg_info "[etape 4/5] Lecture des informations et verification de la compatibilite"
+    msg_info "[step 4/5] Reading device information and checking compatibility"
     # Only parse detailed info if device is in normal mode
     # (DFU mode devices cannot be queried via lockdownd).
     if [ "$DEVICE_MODE" = "normal" ]; then
@@ -128,7 +128,7 @@ main() {
     fi
 
     echo ""
-    msg_info "[etape 5/5] Lancement de tr4mpass"
+    msg_info "[step 5/5] Launching tr4mpass"
     echo ""
 
     # Final validation before exec.
@@ -188,9 +188,9 @@ main() {
     "$BINARY" "${run_args[@]+"${run_args[@]}"}" || _rc=$?
     stop_usbipd_auto_attach
     if [ "$_rc" -eq 0 ]; then
-        msg_ok "[etape 5/5] tr4mpass termine avec succes (code 0)"
+        msg_ok "[step 5/5] tr4mpass finished successfully (code 0)"
     else
-        msg_err "[etape 5/5] tr4mpass a echoue (code $_rc). Lis les lignes [ERROR] juste au-dessus"
+        msg_err "[step 5/5] tr4mpass failed (code $_rc). Check the [ERROR] lines just above"
     fi
     exit $_rc
 }
