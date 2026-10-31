@@ -1,15 +1,15 @@
 /*
- * chip_db_table_rop.h -- chip table part 2: extended chips + A12+ stubs.
+ * chip_db_table_ext.h -- chip table part 2: extended chips + A12+ stubs.
  *
  * Included by chip_db_table.h inside the g_chip_table[] array.
  * Do not include this file directly. All offsets from SecureROM
  * analysis. Each row carries a source line marker for traceability.
  */
-#ifndef CHIP_DB_TABLE_ROP_H
-#define CHIP_DB_TABLE_ROP_H
+#ifndef CHIP_DB_TABLE_EXT_H
+#define CHIP_DB_TABLE_EXT_H
 
     /* ================================================================ */
-    /* ARM64 chips with ROP gadgets (A9X, A10, A10X, A11, T2)          */
+    /* ARM64 chips with redirect addresses (A9X, A10, A10X, A11, T2)   */
     /* ================================================================ */
 
     /* CPID 0x8001 -- S8001 = A9X (APL1021), iPad Pro (1st gen).
@@ -18,7 +18,7 @@
         .cpid = 0x8001,
         .name = "A9X",
         .marketing = "iPad Pro (1st gen)",
-        .checkm8_vulnerable = 1,
+        .checkm8_compatible = 1,
         .config_overwrite_pad = 0x5C0,
         .config_hole          = 6,
         .insecure_memory_base = 0x180000000,
@@ -35,9 +35,9 @@
         .usb_serial_number_string_descriptor = 0x18004486A,
         .ttbr0_addr           = 0x180050000,
         .tlbi                 = 0x100000404,
-        .nop_gadget           = 0x10000CD60,
-        .ret_gadget           = 0x100000118,
-        .func_gadget          = 0x10000CD40,
+        .nop_addr           = 0x10000CD60,
+        .ret_addr           = 0x100000118,
+        .func_addr          = 0x10000CD40,
         .write_ttbr0          = 0x1000003B4,
         .ttbr0_vrom_off       = 0x400,
         .ttbr0_sram_off       = 0x600,
@@ -50,7 +50,7 @@
         .cpid = 0x8010,
         .name = "A10",
         .marketing = "iPhone 7/7+ / iPod touch 7 / iPad 6 / iPad 7",
-        .checkm8_vulnerable = 1,
+        .checkm8_compatible = 1,
         .config_overwrite_pad = 0x5C0,
         .config_hole          = 5,
         .insecure_memory_base = 0x1800B0000,
@@ -67,9 +67,9 @@
         .usb_serial_number_string_descriptor = 0x1800805DA,
         .ttbr0_addr           = 0x1800A0000,
         .tlbi                 = 0x100000434,
-        .nop_gadget           = 0x10000CC6C,
-        .ret_gadget           = 0x10000015C,
-        .func_gadget          = 0x10000CC4C,
+        .nop_addr           = 0x10000CC6C,
+        .ret_addr           = 0x10000015C,
+        .func_addr          = 0x10000CC4C,
         .write_ttbr0          = 0x1000003E4,
         .ttbr0_vrom_off       = 0x400,
         .ttbr0_sram_off       = 0x600,
@@ -82,7 +82,7 @@
         .cpid = 0x8011,
         .name = "A10X",
         .marketing = "iPad Pro 10.5\" / iPad Pro 12.9\" (2nd gen) / Apple TV 4K",
-        .checkm8_vulnerable = 1,
+        .checkm8_compatible = 1,
         .config_overwrite_pad = 0x540,
         .config_hole          = 6,
         .insecure_memory_base = 0x1800B0000,
@@ -99,9 +99,9 @@
         .usb_serial_number_string_descriptor = 0x18008062A,
         .ttbr0_addr           = 0x1800A0000,
         .tlbi                 = 0x100000444,
-        .nop_gadget           = 0x10000CD0C,
-        .ret_gadget           = 0x100000148,
-        .func_gadget          = 0x10000CCEC,
+        .nop_addr           = 0x10000CD0C,
+        .ret_addr           = 0x100000148,
+        .func_addr          = 0x10000CCEC,
         .write_ttbr0          = 0x1000003F4,
         .ttbr0_vrom_off       = 0x400,
         .ttbr0_sram_off       = 0x600,
@@ -114,7 +114,7 @@
         .cpid = 0x8015,
         .name = "A11",
         .marketing = "iPhone 8 / iPhone 8 Plus / iPhone X",
-        .checkm8_vulnerable = 1,
+        .checkm8_compatible = 1,
         .config_overwrite_pad = 0x540,
         .config_hole          = 6,
         .insecure_memory_base = 0x18001C000,
@@ -131,9 +131,9 @@
         .usb_serial_number_string_descriptor = 0x1800008FA,
         .ttbr0_addr           = 0x18000C000,
         .tlbi                 = 0x1000004AC,
-        .nop_gadget           = 0x10000A9C4,
-        .ret_gadget           = 0x100000148,
-        .func_gadget          = 0x10000A9AC,
+        .nop_addr           = 0x10000A9C4,
+        .ret_addr           = 0x100000148,
+        .func_addr          = 0x10000A9AC,
         .write_ttbr0          = 0x10000045C,
         .ttbr0_vrom_off       = 0x400,
         .ttbr0_sram_off       = 0x600,
@@ -146,7 +146,7 @@
         .cpid = 0x8012,
         .name = "T2",
         .marketing = "Apple T2 Security Chip",
-        .checkm8_vulnerable = 1,
+        .checkm8_compatible = 1,
         .config_overwrite_pad = 0x540,
         .config_hole          = 6,
         .insecure_memory_base = 0x18001C000,
@@ -163,9 +163,9 @@
         .usb_serial_number_string_descriptor = 0x18000082A,
         .ttbr0_addr           = 0x18000C000,
         .tlbi                 = 0x100000494,
-        .nop_gadget           = 0x100008DB8,
-        .ret_gadget           = 0x10000012C,
-        .func_gadget          = 0x100008DA0,
+        .nop_addr           = 0x100008DB8,
+        .ret_addr           = 0x10000012C,
+        .func_addr          = 0x100008DA0,
         .write_ttbr0          = 0x100000444,
         .ttbr0_vrom_off       = 0x400,
         .ttbr0_sram_off       = 0x600,
@@ -193,4 +193,4 @@
 };
 /* clang-format on */
 
-#endif /* CHIP_DB_TABLE_ROP_H */
+#endif /* CHIP_DB_TABLE_EXT_H */

@@ -59,13 +59,13 @@ device_info_t e2e_make_device_path_a(void);
 
 /*
  * e2e_make_device_path_b_cellular -- A12+ cellular device fixture
- * (checkm8_vulnerable=0, IMEI populated).
+ * (checkm8_compatible=0, IMEI populated).
  */
 device_info_t e2e_make_device_path_b_cellular(void);
 
 /*
  * e2e_make_device_path_b_wifi -- A12+ WiFi-only device fixture
- * (checkm8_vulnerable=0, IMEI and MEID empty).
+ * (checkm8_compatible=0, IMEI and MEID empty).
  */
 device_info_t e2e_make_device_path_b_wifi(void);
 

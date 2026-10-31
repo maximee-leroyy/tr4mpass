@@ -13,10 +13,10 @@ typedef struct {
     uint32_t    cpid;
     const char *name;               /* "A7", "A8", ..., "A17"            */
     const char *marketing;          /* "iPhone 5s", "iPhone X", etc.     */
-    int         checkm8_vulnerable; /* 1 = A5-A11 (Path A), 0 = A12+    */
+    int         checkm8_compatible; /* 1 = A5-A11 (Path A), 0 = A12+    */
 
     /* DFU config */
-    uint16_t config_large_leak;     /* heap spray iterations (0 = no-leak path) */
+    uint16_t config_large_leak;     /* allocation iterations (0 = no-leak path) */
     uint16_t config_overwrite_pad;  /* overwrite padding size                   */
     uint16_t config_hole;           /* hole count for newer chips (0 if unused) */
 
@@ -34,12 +34,12 @@ typedef struct {
     uint64_t usb_create_string_descriptor;
     uint64_t usb_serial_number_string_descriptor;
 
-    /* ROP gadgets (A10+ only, 0 for older) */
+    /* Redirect addresses (A10+ only, 0 for older) */
     uint64_t ttbr0_addr;
     uint64_t tlbi;
-    uint64_t nop_gadget;
-    uint64_t ret_gadget;
-    uint64_t func_gadget;
+    uint64_t nop_addr;
+    uint64_t ret_addr;
+    uint64_t func_addr;
     uint64_t write_ttbr0;
     uint64_t ttbr0_vrom_off;
     uint64_t ttbr0_sram_off;
@@ -61,10 +61,10 @@ const chip_info_t *chip_db_lookup(uint32_t cpid);
 const char *chip_db_name(uint32_t cpid);
 
 /*
- * chip_db_is_checkm8_vulnerable -- return 1 if the CPID supports
+ * chip_db_is_checkm8_compatible -- return 1 if the CPID supports
  *                                  checkm8 processing (A5-A11), 0 otherwise.
  */
-int chip_db_is_checkm8_vulnerable(uint32_t cpid);
+int chip_db_is_checkm8_compatible(uint32_t cpid);
 
 /*
  * chip_db_print_all -- print the full chip table to stdout (debug only).

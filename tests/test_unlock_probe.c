@@ -19,7 +19,7 @@
 static int mock_probe_path_a(device_info_t *dev)
 {
     if (!dev) return -1;
-    if (dev->checkm8_vulnerable != 1) return 0;
+    if (dev->checkm8_compatible != 1) return 0;
     if (dev->is_dfu_mode != 1) return 0;
     return 1;
 }
@@ -27,7 +27,7 @@ static int mock_probe_path_a(device_info_t *dev)
 static int mock_probe_path_b(device_info_t *dev)
 {
     if (!dev) return -1;
-    if (dev->checkm8_vulnerable != 0) return 0;
+    if (dev->checkm8_compatible != 0) return 0;
     if (dev->is_dfu_mode != 1) return 0;
     return 1;
 }
@@ -52,7 +52,7 @@ static device_info_t make_dev(int checkm8_vuln, int is_dfu)
 {
     device_info_t dev;
     memset(&dev, 0, sizeof(dev));
-    dev.checkm8_vulnerable = checkm8_vuln;
+    dev.checkm8_compatible = checkm8_vuln;
     dev.is_dfu_mode        = is_dfu;
     return dev;
 }

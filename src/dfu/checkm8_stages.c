@@ -96,7 +96,7 @@ int usb_ctrl_transfer_async(libusb_device_handle *dev,
     ret = usb_ctrl_transfer_raw(dev, bmRequestType, bRequest,
                                 wValue, wIndex, data, wLength, timeout_ms);
 
-    /* Timeout and pipe errors are expected during stall-based spray */
+    /* Timeout and pipe errors are expected during stall-based allocation */
     if (ret == LIBUSB_ERROR_TIMEOUT || ret == LIBUSB_ERROR_PIPE) {
         log_debug("usb_ctrl_transfer_async: expected %s (ret=%d), returning 0",
                   ret == LIBUSB_ERROR_TIMEOUT ? "TIMEOUT" : "PIPE/STALL", ret);

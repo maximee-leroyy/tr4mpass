@@ -61,8 +61,8 @@ static int path_b_probe(device_info_t *dev)
         return -1;
     }
 
-    /* A12+ devices have checkm8_vulnerable == 0 */
-    if (dev->checkm8_vulnerable != 0) {
+    /* A12+ devices are not checkm8-compatible */
+    if (dev->checkm8_compatible != 0) {
         log_debug("[path_b] Device is checkm8-compatible (A5-A11), skipping");
         return 0;
     }

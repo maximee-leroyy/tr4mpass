@@ -34,7 +34,7 @@ path_a_probe(device_info_t *dev)
         return -1;
     }
 
-    if (dev->checkm8_vulnerable != 1) {
+    if (dev->checkm8_compatible != 1) {
         log_info("path_a: device not checkm8-compatible (A12+ or unknown)");
         return 0;
     }

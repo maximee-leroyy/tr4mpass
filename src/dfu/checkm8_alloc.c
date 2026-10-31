@@ -199,7 +199,7 @@ int checkm8_stage_spray(dfu_ctx_t *ctx)
      * historical constant remains a safe default here.
      */
     iserial_idx = ctx->dev->iserial_index ? ctx->dev->iserial_index : 3;
-    log_info("checkm8: stage 3/4 -- heap spray (iSerial idx %u)",
+    log_info("checkm8: stage 3/4 -- memory allocation (iSerial idx %u)",
              (unsigned)iserial_idx);
 
     if (chip->config_large_leak == 0) {
@@ -361,6 +361,6 @@ int checkm8_stage_spray(dfu_ctx_t *ctx)
 #endif
 
     ctx->phase = DFU_PHASE_SPRAY;
-    log_info("checkm8: stage 3 complete -- heap spray done");
+    log_info("checkm8: stage 3 complete -- memory allocation done");
     return 0;
 }

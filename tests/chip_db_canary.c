@@ -18,7 +18,7 @@
  * probe entirely (T5 "Chip-DB canary strictness" note).
  *
  * All rows must remain traceable to source line numbers -- see
- * include/device/chip_db_table.h and chip_db_table_rop.h.
+ * include/device/chip_db_table.h and chip_db_table_ext.h.
  */
 
 #include "device/chip_db.h"
@@ -30,7 +30,7 @@
 
 struct expected_row {
     uint32_t    cpid;
-    int         checkm8_vulnerable;
+    int         checkm8_compatible;
     const char *name_substr;
     const char *marketing_substr;
 };
@@ -92,10 +92,10 @@ int main(void)
             failed++;
             continue;
         }
-        if (row->checkm8_vulnerable != exp->checkm8_vulnerable) {
+        if (row->checkm8_compatible != exp->checkm8_compatible) {
             fprintf(stderr,
-                    "[chip-db-canary] FAIL: CPID 0x%04X checkm8_vulnerable=%d expected %d\n",
-                    exp->cpid, row->checkm8_vulnerable, exp->checkm8_vulnerable);
+                    "[chip-db-canary] FAIL: CPID 0x%04X checkm8_compatible=%d expected %d\n",
+                    exp->cpid, row->checkm8_compatible, exp->checkm8_compatible);
             failed++;
         }
         if (strstr(row->name, exp->name_substr) == NULL) {

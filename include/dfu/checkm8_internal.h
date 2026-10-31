@@ -62,14 +62,14 @@
 
 /*
  * CPID_IS_LEGACY_64 -- ARM64 chips that use payload_hdr_a9_t (the simpler
- * 64-bit header without ROP gadgets or tlbi).  Previously this included
+ * 64-bit header without redirect addresses or tlbi).  Previously this included
  * 0x8947 (A7), but A7 is treated as ARMv7 (payload_dest_armv7 path),
  * so this macro is currently unused; kept for future use.
  */
 #define CPID_IS_LEGACY_64(cpid) \
     (0)
 
-/* Chips with ROP gadgets (tlbi != 0 means newer overwrite path) */
+/* Chips with redirect addresses (tlbi != 0 means newer overwrite path) */
 #define CPID_HAS_TLBI(chip)  ((chip)->tlbi != 0)
 
 /* ------------------------------------------------------------------ */
@@ -127,7 +127,7 @@ typedef struct {
     uint64_t ttbr0_vrom_off;
 } payload_hdr_a9_t;
 
-/* ARM64 payload header for A10+ chips (with ROP gadgets) */
+/* ARM64 payload header for A10+ chips (with redirect addresses) */
 typedef struct {
     uint64_t insecure_memory_base;
     uint64_t patch_addr;
@@ -143,9 +143,9 @@ typedef struct {
     uint64_t usb_serial_number_string_descriptor;
     uint64_t ttbr0_addr;
     uint64_t tlbi;
-    uint64_t nop_gadget;
-    uint64_t ret_gadget;
-    uint64_t func_gadget;
+    uint64_t nop_addr;
+    uint64_t ret_addr;
+    uint64_t func_addr;
     uint64_t write_ttbr0;
     uint64_t ttbr0_vrom_off;
     uint64_t ttbr0_sram_off;
@@ -179,7 +179,7 @@ int assemble_payload(dfu_ctx_t *ctx);
 
 /*
  * usb_ctrl_transfer_async -- Send a control transfer with a short
- * timeout, ignoring timeout errors. Used for stall-based spray.
+ * timeout, ignoring timeout errors. Used for stall-based allocation.
  * Returns 0 on success or timeout, -1 on hard failure.
  */
 int usb_ctrl_transfer_async(libusb_device_handle *dev,

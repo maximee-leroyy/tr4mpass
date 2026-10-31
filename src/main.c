@@ -243,14 +243,14 @@ static void enrich_chip_info(device_info_t *dev)
     if (!chip) {
         log_warn("CPID 0x%04X not found in chip database", dev->cpid);
         snprintf(dev->chip_name, sizeof(dev->chip_name), "Unknown");
-        dev->checkm8_vulnerable = 0;
+        dev->checkm8_compatible = 0;
         return;
     }
     snprintf(dev->chip_name, sizeof(dev->chip_name), "%s", chip->name);
-    dev->checkm8_vulnerable = chip->checkm8_vulnerable;
+    dev->checkm8_compatible = chip->checkm8_compatible;
     log_debug("Chip: %s (CPID 0x%04X) -- checkm8 %s",
               chip->name, chip->cpid,
-              chip->checkm8_vulnerable ? "compatible" : "not compatible");
+              chip->checkm8_compatible ? "compatible" : "not compatible");
 }
 
 static void register_modules(void)
@@ -268,7 +268,7 @@ static void print_module_diagnostics(const device_info_t *dev)
     log_error("  DFU=%s CPID=0x%04X Chip=%s checkm8=%s Product=%s",
               dev->is_dfu_mode ? "YES" : "NO", dev->cpid,
               dev->chip_name[0] ? dev->chip_name : "(unknown)",
-              dev->checkm8_vulnerable ? "YES" : "NO",
+              dev->checkm8_compatible ? "YES" : "NO",
               dev->product_type[0] ? dev->product_type : "(unknown)");
 
     if (!dev->is_dfu_mode)

