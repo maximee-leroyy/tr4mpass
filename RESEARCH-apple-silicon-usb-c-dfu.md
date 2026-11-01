@@ -1856,3 +1856,36 @@ Détails :
    (remplacement mobileactivationd via ramdisk) nécessitent maintenant
    un boot avec boot-args rd=md0 + deletescript — le ramdisk E30 était
    en mémoire mais non utilisé (pas de xargs rd=md0 ; caveat documenté).
+
+### E32 — SSH RAMDISK CUSTOM : BUILD ET VÉRIFIÉ (host-side)
+
+| ID | Type | Constat | Décision/impact | Prochaine action |
+|---|---|---|---|---|
+| **E32** | **✅✅** | `scripts/build_ssh_rd.sh` produit `images/ramdisk_ssh.dmg` (IM4P rdsk, 105 367 578 octets < cap 128 MiB), volume HFSX vérifié: dropbear + LaunchDaemon + bin/ kit présents | Route bypass débloquée: plus besoin de WKEY (le rdsk stock est DÉJÀ DÉCRYPTÉ) ni de dora2 (mort) -- kit BSD-3 verygenericname/SSHRD_Script vendu | boot du rdsk SSH: DFU -> ra1npoc -> pongo_load_ramdisk --kpf --bootargs rd=md0 -> ssh root@localhost -p 2222 |
+
+Découvertes clés :
+
+1. **Le rdsk 18F72 est en clair** : IM4P(rdsk) -> payload = volume HFSX
+   brut (HX @0x400), entropy faible, monte direct via hdiutil après
+   `ipsw img4 im4p extract`. Pas de WKEY/GID nécessaire (le plan
+   supposait le contraire -- option C simplifiée d'un cran).
+2. **Kit SSHRD_Script** (verygenericname, BSD-3, 645*) vendu dans
+   `tools/sshtars/` : dropbear (blank-password auth vérifié strings) +
+   host keys + bash + launchctl + img4tool/ldid + restored_external
+   (qui execl dropbear sur le mux USB et lance mount_filesystems).
+3. **Le kit remplace les dylibs manquantes du rdsk stock** (libncurses,
+   libresolv absentes du rdsk Apple ; le kit les embarque dans usr/lib).
+4. **Trim requis** : volume 100.4 MiB avec 27 MiB libres ; kit trimmé à
+   ~20 MiB (pas de locale/terminfo/nano/magic/TrollStore). hdiutil ne
+   peut PAS redimensionner un volume HFSX brut (pas de wrapper DMG) --
+   donc pas de grow, le trim est obligatoire.
+5. **hdiutil exige l'extension .dmg** pour attacher un HFS brut
+   (rd.hfs refuse, rd.dmg OK) ; une ancienne montage read-only du
+   volume parent bloque les nouveaux attaches (ejecté).
+6. **Bug script corrigé** : le volume modifié est rd.dmg (copie), pas
+   rd.hfs (original) -- le wrap IM4P doit prendre rd.dmg ; le verify
+   cmp rd.dmg <-> extract(IM4P) est byte-identique, dropbear présent.
+7. **restored_external du kit** : strings vérifiés -- execl
+   /usr/local/bin/dropbear (mux USB, micro_inetd) + /bin/bash
+   /usr/bin/mount_filesystems ; LaunchDaemon com.tr4mpass.dropbear
+   RunAtLoad ajouté (launchd du rdsk le lance au boot).
