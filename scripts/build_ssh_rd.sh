@@ -129,6 +129,21 @@ rm -rf "$R/usr/standalone"                       # periph firmware, 27MB
 find "$R/System/Library/PrivateFrameworks" -maxdepth 1 -mindepth 1 \
     ! -name 'APFS.framework' ! -name 'MediaKit.framework' \
     -exec rm -rf {} + 2>/dev/null || true
+# E51/E52 lesson: apfs_sealvolume (snapshot re-seal + root-snapshot re-pin,
+# the tool that moves the volume superblock's root-snapshot xid) LC_LOADs
+# PrivateFrameworks/AppleFSCompression -- which lives ONLY in the dyld
+# shared cache, not in the stock restore ramdisk. Copy it from the
+# extracted stash (state dir survives build WORK wipes).
+FW_STASH="$(state_dir)/images/fw_stash"
+if [ -d "$FW_STASH/AppleFSCompression.framework" ]; then
+    cp -Rp "$FW_STASH/AppleFSCompression.framework" \
+        "$R/System/Library/PrivateFrameworks/" \
+        || fail "AppleFSCompression copy failed"
+else
+    fail "fw_stash missing: extract AppleFSCompression from the device dyld shared cache first (see images/fw_stash/README-tr4mpass.txt)"
+fi
+[ -e "$R/System/Library/PrivateFrameworks/AppleFSCompression.framework/AppleFSCompression" ] \
+    || fail "AppleFSCompression dylib missing after copy"
 rm -rf "$R/System/Library/Extensions"            # disk kernel has own
 for fw in CFNetwork CoreServices Foundation MobileCoreServices \
          Security SystemConfiguration IOSurface; do
@@ -319,6 +334,10 @@ hdiutil attach -readonly -mountpoint "$MNT" "$WORK/verify.dmg" >/dev/null \
     || { hdiutil detach "$MNT"; fail "kit restored_external missing"; }
 [ -e "$MNT/usr/bin/mount_filesystems" ] \
     || { hdiutil detach "$MNT"; fail "mount_filesystems missing"; }
+[ -e "$MNT/System/Library/PrivateFrameworks/AppleFSCompression.framework/AppleFSCompression" ] \
+    || { hdiutil detach "$MNT"; fail "AppleFSCompression framework missing"; }
+[ -e "$MNT/System/Library/Filesystems/apfs.fs/apfs_sealvolume" ] \
+    || { hdiutil detach "$MNT"; fail "apfs_sealvolume missing"; }
 [ -x "$MNT/bin/bash" ] \
     || { hdiutil detach "$MNT"; fail "bash missing/not executable"; }
 hdiutil detach "$MNT" >/dev/null
