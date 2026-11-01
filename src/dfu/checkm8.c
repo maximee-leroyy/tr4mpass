@@ -323,6 +323,15 @@ int checkm8_verify(device_info_t *dev)
 
         if (need_deactivate)
             iokit_usb_deactivate();
+
+        /*
+         * E19: with no libusb handle on macOS, the IOKit serial read
+         * above IS the answer -- no PWND means the stages must run.
+         * Returning here avoids the libusb fallback below, which can
+         * only fail (dev->usb == NULL) and log a misleading usbipd
+         * warning on every fresh run.
+         */
+        return 0;
     }
 #else
     /*
@@ -431,22 +440,61 @@ int checkm8_run(device_info_t *dev)
      * previous successful attempt), skip re-processing.
      * checkm8_verify returns 1 if "PWND:" is in the serial.
      *
-     * ON DARWIN (macOS):
-     * libusb_get_string_descriptor_ascii on a fresh DFU handle before
-     * a stage_reset (CLRSTATUS/ABORT) frequently causes kIOReturnTimeout
-     * on Apple Silicon XHCI. This poisons the control pipe, causing Stage 1
-     * GET_STATUS to timeout later.
+     * The probe itself must not disturb a device that still needs the
+     * stages: the stages are only valid against a fresh DFU (E19), and
+     * stage 1 expects EP0 exactly as the device left it.
      *
-     * Fix: Only verify on open handles if we're NOT on Darwin, or if we
-     * explicitly need to check a retry handle. For the initial run,
-     * assume it needs processing and let stage_reset handle the state.
+     * Linux: verify on the open handle -- lsusb reads the kernel's
+     * descriptor cache and the libusb serial read is harmless there, so
+     * the handle stays usable for the stages.
+     *
+     * macOS: reading the serial on the libusb handle is what returned
+     * kIOReturnTimeout on Apple Silicon XHCI and poisoned stage 1's
+     * GET_STATUS.  Close the handle FIRST instead: closing sends no USB
+     * traffic, so EP0 cannot be poisoned, and with dev->usb == NULL
+     * checkm8_verify takes its IOKit path (serial read on the IOService,
+     * no control requests).  E19 proved that read works on a pwned
+     * device without wedging anything
+     * (RESEARCH-apple-silicon-usb-c-dfu.md, E19).
      */
+    {
+        int pre = 0;
+
 #if !defined(__APPLE__)
-    if (dev->usb && dev->usb_claimed) {
-        int pre = checkm8_verify(dev);
+        if (dev->usb)
+            pre = checkm8_verify(dev);
+#else
+        if (dev->usb) {
+            usb_dfu_close(dev->usb);
+            dev->usb = NULL;
+            pre = checkm8_verify(dev);
+        }
+#endif
         if (pre == 1) {
             log_info("checkm8_run: device already processed, skipping");
             return 0;
+        }
+    }
+
+#if defined(__APPLE__)
+    /*
+     * The pre-check above closed the libusb handle so IOKit could own
+     * the device.  A device that is not processed still needs the
+     * stages, so re-open the handle the same way detection did.
+     */
+    if (!dev->usb) {
+        uint8_t reopen_iserial = 0;
+        int ra;
+
+        for (ra = 0; ra < 5 && !dev->usb; ra++) {
+            if (usb_dfu_find(&dev->usb, &reopen_iserial) == 0)
+                dev->iserial_index = reopen_iserial;
+            else if (ra < 4)
+                sleep(2);
+        }
+        if (!dev->usb) {
+            log_error("checkm8_run: DFU device lost after pre-check");
+            return -1;
         }
     }
 #endif

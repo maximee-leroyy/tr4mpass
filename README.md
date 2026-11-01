@@ -232,8 +232,9 @@ capability-by-capability table:
 [`COMPARISON-palera1n-vs-tr4mpass.md`](COMPARISON-palera1n-vs-tr4mpass.md).
 
 To take this toolkit's remaining steps from "written" to "executed" —
-ramdisk, kernel patches, activation record, deletescript — follow the
-phased plan with decision gates and scripts:
+ramdisk, kernel patches, activation record, deletescript — see the
+operations guide [`README-pipeline.md`](README-pipeline.md) (scripts,
+workflow, tooling decisions) and the phased plan with decision gates:
 [`PLAN-path-a-execution.md`](PLAN-path-a-execution.md).
 
 ---

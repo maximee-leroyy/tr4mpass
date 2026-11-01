@@ -61,7 +61,7 @@ def read_central_directory(url, total=None):
             raise RuntimeError("zip64 locator not found")
         eocd64_off = struct.unpack("<Q", tail[loc + 8:loc + 16])[0]
         rec = get(url, eocd64_off, eocd64_off + 55)
-        (_, _, _, _, _, _, n_entries, cd_size, cd_offset) = struct.unpack(
+        (_, _, _, _, _, _, _, n_entries, cd_size, cd_offset) = struct.unpack(
             "<4sQHHIIQQQQ", rec[:56])
 
     cd = get(url, cd_offset, cd_offset + cd_size - 1)

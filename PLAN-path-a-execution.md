@@ -115,22 +115,53 @@ source ~/.cache/tr4mpass/images/env.sh
 
 ## Phase 3 — Ramdisk custom (le plus gros chantier hors code)
 
+> **Principe permanent (directive utilisateur)** : avant d'écrire quoi que
+> ce soit, vérifier qu'un outil existant ne fait pas déjà l'étape. Tableau
+> de mapping ci-dessous — chaque ligne = un outil existant, pas du code
+> nouveau.
+
 Objectif : le ramdisk doit contenir ce que `path_a` suppose présent :
 **dropbear sur 2222**, **`/usr/bin/jbinit`** (patcher AMFI appelé par
 `path_a_ssh.c`), outils POSIX de base. Le ramdisk IPSW n'a rien de ça.
 
+### 3.0 — Outils existants d'abord (mapping étape → outil)
+
+| Étape du plan | Outil existant | Repo / source | Statut |
+|---|---|---|---|
+| Télécharger/extraire IPSW | `ipsw` (MIT, Go, brew) | https://github.com/blacktop/ipsw | ✅ vérifié (`download ipsw --device --build`, `extract`, `mount rdisk`) — install: `brew install blacktop/tap/ipsw` |
+| Construire SSH ramdisk | ~~`ipsw ssh`~~ | https://blacktop.github.io/ipsw/docs/cli/ipsw/ssh/ssh | ❌ **vérifié : c'est un client SSH**, pas un builder. Sous-commandes = `debugserver`/`shsh` seulement. Un stub caché `idev restore-ramdisk` est `panic("not implemented")` |
+| SSH ramdisk préconstruit (option B) | Dora2 | github.com/dora2-iOS | ❌ **compte inactif (0 repos)**, releases 404, `jbinit` 404 — option morte |
+| Monter le ramdisk stock (aide au patching) | `ipsw mount rdisk IPSW --ident Erase [--key K \| --lookup]` | https://blacktop.github.io/ipsw/docs/cli/ipsw/mount | ✅ vérifié — monte sur l'hôte (pas d'injection) |
+| **`mobileactivationd` patché** | *aucun outil connu* | — | ❌ blocker confirmé (option B morte) |
+| **[6/8] record + soumission** | `ideviceactivation activate` (libideviceactivation, LGPL) | https://github.com/libimobiledevice/libideviceactivation | ✅ vérifié README : « Implements complete activation and deactivation process » + CLI. **Décision gate** : tester sur le device ramdisk AVANT notre `path_a_activate` |
+| Patcher iBoot/dyld du ramdisk | iBoot64Patcher, img4tool, iExtractor | déjà listés dans README References | ✅ connus — restent requis pour l'option C |
+| [7/8] deletescript | *pas d'équivalent connu* | — | ❌ code tr4mpass conserve |
+
+**Conséquence vérifiée (2026-11-01)** : l'option A (`ipsw ssh`) est morte,
+l'option B (Dora2) est morte ⇒ **l'option C (pipeline manuel :
+`ipsw mount rdisk` → injection dropbear/jbinit → iBoot64Patcher →
+img4tool/IMG4 rebuild) est le chemin restant** — c'est plus de travail
+que prévu, et le blocker `TR4MPASS_PATCHED_MAD` reste entier.
+`scripts/build_ramdisk_ssh.sh` implémente la gate runtime : si un futur
+`ipsw ssh ramdisk` apparaît, le script l'utilisera ; sinon il échoue
+avec la commande d'upgrade exacte (pas de workaround).
+
+**Impact majeur restant** : `ideviceactivation activate` (vérifié) peut
+remplacer notre étape [6/8] C pour le premier run device — notre code
+`activation/*.c` (calqué sur ce tool + go-ios, cf. README References)
+reste le fallback documenté. Attention licence si link statique
+(LGPL2.1 lib / GPL3 CLI — cf. COPYING du repo).
+
 | Option | Méthode | Coût | Risque |
 |---|---|---|---|
-| **A (recommandée)** | Construire un SSH ramdisk avec l'outil `ipsw` (blacktop) : `ipsw ramdisk ssh --decrypt` à partir de l'IPSW + injection dropbear/jbinit | moyen (outil éprouvé) | patch iBoot/dyld à valider |
-| B | Dora2 `SSH_Ramdisk` préconstruit proche de la version | faible si existe | adéquation version/BDID à vérifier |
-| C | Pipeline manuel iExtractor + img4tool + iBoot64Patcher (référencées dans le README) | élevé | plusieurs outils à chaîner à la main |
+| ~~A~~ | ~~`ipsw ssh`~~ — vérifié : client SSH, pas un builder | — | ❌ mort (2026-11-01) |
+| ~~B~~ | ~~Dora2 préconstruit~~ — vérifié : compte inactif, releases 404 | — | ❌ mort (2026-11-01) |
+| **C (seule restante)** | Pipeline manuel : `ipsw mount rdisk` (montage hôte du RestoreRamDisk) → injection dropbear + outils → iBoot64Patcher (iBEC/iBoot) → img4tool (repack IMG4) | élevé | plusieurs outils à chaîner ; WKEY de déchiffrement du ramdisk requise (`ipsw` peut la lookup) |
 
-**Entrée externe à sourcer séparément** (honnêteté) : un
-**`mobileactivationd` patché** (`TR4MPASS_PATCHED_MAD`) — le binaire
-n'est ni dans le repo ni dans l'IPSW (il faut le produire/obtenir ;
-décision à prendre : le construire depuis les sources
-libideviceactivation/go-ios citées, ou le demander au fournisseur du
-projet). **C'est le seul input non scriptable identifié.**
+**Entrée externe** (`TR4MPASS_PATCHED_MAD`) — voir 3.0 : SI un ramdisk
+Dora2/hacktivation bundle déjà le binaire patché, on le récupère et
+le blocker disparaît. Sinon, décision projet : le construire depuis
+les sources libideviceactivation/go-ios citées, ou l'obtenir ailleurs.
 
 **Porte** : le ramdisk custom booté manuellement via
 `irecovery -f` + `bootx` expose SSH sur 2222 (testable au `nc`/`ssh`

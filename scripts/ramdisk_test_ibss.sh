@@ -26,9 +26,12 @@
 # Usage: scripts/ramdisk_test_ibss.sh [--device iPhone8,1] [--keep-images]
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/lib.sh"
+
 DEVICE_ID="iPhone8,1"          # iPhone 6s (CPID 0x8000)
 KEEP_IMAGES=0
-WORKDIR="${TR4MPASS_IMAGES_DIR:-$HOME/.cache/tr4mpass/images}"
+WORKDIR="${TR4MPASS_IMAGES_DIR:-$(state_dir)/images}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -45,7 +48,6 @@ info() { echo "[iBSS-test] $*"; }
 command -v irecovery    >/dev/null 2>&1 || fail "irecovery not found (brew install libirecovery)"
 command -v idevice_id   >/dev/null 2>&1 || fail "idevice_id not found (brew install libimobiledevice)"
 command -v python3      >/dev/null 2>&1 || fail "python3 not found"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ------------------------------------------------------------------
 # 0. Preconditions: pwned DFU right now?
@@ -61,22 +63,16 @@ info "device is in pwned DFU (serial contains PWND:)"
 # 1. Installed iOS version. The device must boot iOS for ideviceinfo;
 #    ask for the cable replug if it is still sitting in DFU.
 # ------------------------------------------------------------------
-VERSION_FILE=""
-BUILD_FILE=""
-MODEL_FILE=""
-if [ -f /tmp/ios_version.txt ] && [ -f /tmp/ios_build.txt ]; then
-    VERSION_FILE=/tmp/ios_version.txt
-    BUILD_FILE=/tmp/ios_build.txt
-    MODEL_FILE=/tmp/ios_model.txt
+VERSION_FILE="$(state_dir)/ios_version.txt"
+BUILD_FILE="$(state_dir)/ios_build.txt"
+MODEL_FILE="$(state_dir)/ios_model.txt"
+if [ -f "$VERSION_FILE" ] && [ -f "$BUILD_FILE" ]; then
     info "reusing cached detection: $(cat "$VERSION_FILE") ($(cat "$BUILD_FILE"))"
 else
     info "device must boot iOS once so we can read its version."
     info ">>> UNPLUG and REPLUG the cable now (device boots to iOS)."
     "$SCRIPT_DIR/detect_ios.sh" 300 || \
         fail "could not detect iOS version (no normal-mode device seen)"
-    VERSION_FILE=/tmp/ios_version.txt
-    BUILD_FILE=/tmp/ios_build.txt
-    MODEL_FILE=/tmp/ios_model.txt
 fi
 
 IOS_VERSION="$(cat "$VERSION_FILE")"
