@@ -186,10 +186,14 @@ static int ifc_reopen(void)
 
 static int bulk_write(const uint8_t *buf, long sz)
 {
-	/* 16 KiB chunks with a no-data timeout: near the end of a big DMA
-	 * WritePipe can block indefinitely (seen at 99% of 105 MB) while a
-	 * fresh write succeeds -- recover via stall-clear + interface
-	 * reopen, then push the remaining bytes. */
+	/* 16 KiB chunks with a no-data timeout. On ANY stall: return 2 and
+	 * let upload() restart the WHOLE transfer. Resending just the
+	 * current chunk is UNSAFE: the device already consumed some of the
+	 * stalled chunk's packets into its DMA, so a chunk-resend
+	 * duplicates bytes and SHIFTS all subsequent data (E39/E41: the
+	 * HFS volume header at +1024 read as zeros after a mid-transfer
+	 * stall+resend). A full restart re-primes the DMA from byte 0
+	 * (reallocate_loader_xfer_data) and is idempotent. */
 	long off = 0;
 	long next_report = 0;
 	while (off < sz) {
@@ -199,23 +203,9 @@ static int bulk_write(const uint8_t *buf, long sz)
 		                                   (UInt32)chunk, 5000, 0);
 		if (r != KERN_SUCCESS) {
 			fprintf(stderr, "\nWritePipe at %ld: 0x%x -- "
-			        "recovering\n", off, r);
+			        "need full restart\n", off, r);
 			(*g_ifc)->ClearPipeStallBothEnds(g_ifc, 2);
-			r = (*g_ifc)->WritePipeTO(g_ifc, 2,
-			                          (void *)(buf + off),
-			                          (UInt32)chunk, 5000, 0);
-			if (r != KERN_SUCCESS && !ifc_reopen()) {
-				r = (*g_ifc)->WritePipeTO(g_ifc, 2,
-				                          (void *)(buf + off),
-				                          (UInt32)chunk,
-				                          5000, 0);
-			}
-			if (r != KERN_SUCCESS) {
-				fprintf(stderr,
-				        "WritePipe retry at %ld: 0x%x\n",
-				        off, r);
-				return 1;
-			}
+			return 2;
 		}
 		off += chunk;
 		if (off >= next_report) {
@@ -249,26 +239,38 @@ static int upload(const char *path)
 
 	/* init bulk upload: 0x21/1 with a 4-byte size data phase
 	 * (reallocate_loader_xfer_data -- resizes the xfer buffer and
-	 * primes the EP2 OUT DMA). Identical to pongoterm /send. */
+	 * primes the EP2 OUT DMA). Identical to pongoterm /send.
+	 * On any mid-transfer stall, bulk_write returns 2 and the WHOLE
+	 * transfer restarts from byte 0 -- a partial resend would
+	 * duplicate bytes and shift the data (see bulk_write comment). */
 	uint32_t newsz = (uint32_t)sz;
-	if (ctrl(0x21, 1, 0, 0, &newsz, 4))
-		return 1;
-
-	if (bulk_write(buf, sz))
-		return 1;
-	/* reallocate_loader_xfer_data rounds newsz up to a 512 multiple and
-	 * primes the DMA for exactly that many bytes; the Synopsys core only
-	 * raises transfer-complete at full size, so pad short tails. */
 	uint32_t dma_sz = (uint32_t)((sz + 0x1ff) & ~0x1ff);
 	uint32_t pad = dma_sz - (uint32_t)sz;
-	if (pad) {
-		static uint8_t padbuf[511];
-		memset(padbuf, 0, pad);
-		if (bulk_write(padbuf, pad))
+	static uint8_t padbuf[511];
+	memset(padbuf, 0, sizeof(padbuf));
+	for (int attempt = 0; attempt < 4; attempt++) {
+		if (attempt) {
+			fprintf(stderr,
+			        "restart %d/3: re-priming DMA and "
+			        "re-sending from byte 0\n", attempt);
+			sleep(1);
+		}
+		if (ctrl(0x21, 1, 0, 0, &newsz, 4))
 			return 1;
+		int rc = bulk_write(buf, sz);
+		if (rc == 1)
+			return 1;
+		if (rc == 2)
+			continue;
+		if (pad && bulk_write(padbuf, pad)) {
+			fprintf(stderr, "pad write stalled -- "
+			        "restart\n");
+			continue;
+		}
+		printf("uploaded %ld bytes (+%u pad)\n", sz, pad);
+		return 0;
 	}
-	printf("uploaded %ld bytes (+%u pad)\n", sz, pad);
-	return 0;
+	return 1;
 }
 
 /* The very first upload attempt used the wLength=0 init, which primed a
