@@ -67,12 +67,25 @@ int iokit_usb_activate(void)
         return -1;
     }
 
-    kr = (*g_device)->USBDeviceOpen(g_device);
-    if (kr != kIOReturnSuccess) {
-        log_error("iokit_usb: USBDeviceOpen failed: 0x%x", kr);
-        (*g_device)->Release(g_device);
-        g_device = NULL;
-        return -1;
+    /* Open the device with a short retry so the IOKit port can settle. */
+    {
+        int open_retries;
+        int opened = 0;
+        for (open_retries = 0; open_retries < 20; open_retries++) {
+            kr = (*g_device)->USBDeviceOpen(g_device);
+            if (kr == kIOReturnSuccess) {
+                opened = 1;
+                break;
+            }
+            log_debug("iokit_usb: USBDeviceOpen retry %d/20: 0x%x", open_retries + 1, kr);
+            usleep(50000);
+        }
+        if (!opened) {
+            log_error("iokit_usb: USBDeviceOpen failed: 0x%x", kr);
+            (*g_device)->Release(g_device);
+            g_device = NULL;
+            return -1;
+        }
     }
 
     kr = (*g_device)->SetConfiguration(g_device, 1);
