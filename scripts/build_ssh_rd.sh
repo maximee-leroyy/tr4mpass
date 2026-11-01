@@ -130,9 +130,9 @@ for fw in CFNetwork CoreServices Foundation MobileCoreServices \
 done
 rm -rf "$R/System/Library/FDR" "$R/System/Library/FeatureFlags"
 rm -f  "$R/usr/libexec/seputil" "$R/usr/libexec/SavageUtil" \
-       "$R/usr/libexec/DumpPanic" "$R/usr/libexec/diskimagesiod"
+       "$R/usr/libexec/DumpPanic"
 rm -f  "$R/usr/sbin/asr" "$R/usr/sbin/hdik" "$R/usr/sbin/mtree" \
-       "$R/usr/sbin/syslogd" "$R/usr/sbin/fsck" "$R/usr/sbin/fsck_hfs" \
+       "$R/usr/sbin/fsck" "$R/usr/sbin/fsck_hfs" \
        "$R/usr/sbin/fsck_apfs" "$R/usr/sbin/apfs_hfs_convert" \
        "$R/usr/sbin/newfs_apfs" "$R/usr/sbin/newfs_hfs"
 # E42 lesson: KEEP the binaries the 4 stock ramdisk LaunchDaemons
