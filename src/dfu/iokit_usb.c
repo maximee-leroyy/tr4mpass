@@ -158,6 +158,40 @@ int iokit_usb_ctrl_transfer(uint8_t bmRequestType, uint8_t bRequest,
     return LIBUSB_ERROR_OTHER;
 }
 
+int iokit_usb_abort_pipe_zero(void)
+{
+    IOReturn kr;
+    if (!g_active || !g_device)
+        return -1;
+    kr = (*g_device)->USBDeviceAbortPipeZero(g_device);
+    log_info("iokit_usb: AbortPipeZero ret=0x%x", kr);
+    return (kr == kIOReturnSuccess) ? 0 : -1;
+}
+
+int iokit_usb_read_serial(uint8_t iserial_idx, char *out, size_t outsz)
+{
+    uint8_t desc[256];
+    int ret;
+    size_t i, j;
+
+    if (!g_active || !g_device || iserial_idx == 0 || !out || outsz < 2)
+        return -1;
+
+    ret = iokit_usb_ctrl_transfer(0x80, 0x06,
+                                  (uint16_t)(0x0300 | iserial_idx),
+                                  0x0409, desc, sizeof(desc), 1000);
+    if (ret < 2 || desc[1] != 0x03)
+        return -1;
+
+    /* USB string descriptors are UTF-16LE — extract ASCII. */
+    for (i = 2, j = 0; i + 1 < (size_t)ret && j + 1 < outsz; i += 2) {
+        if (desc[i + 1] == 0 && desc[i] >= 0x20 && desc[i] < 0x7F)
+            out[j++] = (char)desc[i];
+    }
+    out[j] = '\0';
+    return (int)j;
+}
+
 int iokit_usb_reset_device(void)
 {
     if (!g_active || !g_device)

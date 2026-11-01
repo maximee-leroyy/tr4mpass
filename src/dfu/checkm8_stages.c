@@ -217,8 +217,16 @@ int usb_ctrl_transfer_soft_timeout(libusb_device_handle *dev,
         log_debug("soft_timeout: STALL received");
         result = LIBUSB_ERROR_PIPE;
     } else {
-        log_debug("soft_timeout: transfer status=%d (treating as timeout)",
-                  transfer->status);
+        const char *sname = "unknown";
+        switch (transfer->status) {
+        case LIBUSB_TRANSFER_CANCELLED: sname = "CANCELLED"; break;
+        case LIBUSB_TRANSFER_TIMED_OUT: sname = "HW_TIMEOUT"; break;
+        case LIBUSB_TRANSFER_ERROR:     sname = "ERROR"; break;
+        case LIBUSB_TRANSFER_NO_DEVICE: sname = "NO_DEVICE"; break;
+        default: break;
+        }
+        log_debug("soft_timeout: status=%d (%s) -- request may not "
+                  "have reached device", transfer->status, sname);
         result = LIBUSB_ERROR_TIMEOUT;
     }
 
@@ -521,6 +529,19 @@ int checkm8_stage_setup(dfu_ctx_t *ctx)
 
         log_debug("checkm8_stage_setup: dnload_abort returned sent=%d", sent);
 
+        /* [diag] Check DFU state after abort to verify device received
+         * the DFU_DNLOAD.  If EP0 ring is corrupted by the cancel, this
+         * probe itself will fail — that confirms the padding won't reach
+         * the device either. */
+        {
+            uint8_t diag_state = 0xFF;
+            int diag_ret = usb_ctrl_transfer_raw(usb, 0xA1, 0x05, 0, 0,
+                                                  &diag_state, 1, 500);
+            log_info("checkm8_stage_setup: [diag] post-abort GETSTATE "
+                     "ret=%d state=%u%s", diag_ret, diag_state,
+                     diag_ret < 0 ? " (EP0 ring may be corrupted)" : "");
+        }
+
         if (sent < 0) {
             log_debug("checkm8_stage_setup: dnload_abort failed, retrying");
             goto retry;
@@ -569,6 +590,10 @@ int checkm8_stage_setup(dfu_ctx_t *ctx)
              * of the padding response code.
              */
             if (pad_ret == LIBUSB_ERROR_TIMEOUT && sent == 0) {
+                log_warn("checkm8_stage_setup: [diag] padding returned "
+                         "TIMEOUT not STALL -- on XHCI, EP0 ring corruption "
+                         "from cancel may prevent the request reaching the "
+                         "device (UAF unconfirmed)");
                 ctx->phase = DFU_PHASE_SETUP;
                 log_info("checkm8: stage 2 complete -- setup done "
                          "(attempt=%d, sent=%d, pad=%u, macOS timeout-as-stall)",

