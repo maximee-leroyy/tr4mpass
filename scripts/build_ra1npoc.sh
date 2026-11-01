@@ -13,9 +13,9 @@ set -eu
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib.sh
-source "$SELF_DIR/scripts/lib.sh"
+source "$SELF_DIR/lib.sh"
 
-RA1NPOC_DIR="$SELF_DIR/tools/ra1npoc"
+RA1NPOC_DIR="$SELF_DIR/../tools/ra1npoc"
 OUT_DIR="$(state_dir)/tools"
 LOG="$(log_dir)/build-ra1npoc-$(date +%Y%m%d-%H%M%S).log"
 
@@ -42,5 +42,13 @@ cp "$RA1NPOC_DIR/pongoOS/scripts/pongoterm" "$OUT_DIR/pongoterm"
 
 require_file "ra1npoc" "$OUT_DIR/ra1npoc"
 require_file "pongoterm" "$OUT_DIR/pongoterm"
+
+echo "[4/3] building pongo_upload"
+clang -O2 -Wall -o "$OUT_DIR/pongo_upload" \
+    "$SELF_DIR/../tools/pongo_upload.c" \
+    -framework CoreFoundation -framework IOKit >> "$LOG" 2>&1
+require_file "pongo_upload" "$OUT_DIR/pongo_upload"
+
 echo "OK: $OUT_DIR/ra1npoc"
 echo "OK: $OUT_DIR/pongoterm"
+echo "OK: $OUT_DIR/pongo_upload"
