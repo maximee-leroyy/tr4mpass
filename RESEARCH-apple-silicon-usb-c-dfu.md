@@ -11,6 +11,15 @@ directement sur un port USB-C**, donc
 Cible de test : **iPhone 6s (A9), CPID `0x8000`**, `SRTG:[iBoot-2234.0.0.3.3]`,
 DFU `05ac:1227`, `iSerialNumber` = index 4.
 
+> **Note (E20)** : `SRTG` = *SecureROM Tag* — c'est la version du
+> **BootROM** de l'A9, **pas** celle d'iOS. `iBoot-2234.0.0.3.3` est
+> donc identique sur TOUS les iPhone 6s quelle que soit la version iOS
+> installée. Vérifié empiriquement : les iBSS des IPSW 9.0 (2817.1.93),
+> 9.0.2 (2817.1.94), 9.1 (2817.10.34) et 9.3.5 (2817.60.2) n'ont jamais
+> cette valeur. ⇒ **le serial DFU ne permet pas de déduire la version
+> iOS** ; il faut la lire sur le device (Settings > General > About) ou
+> via `ideviceinfo` en mode normal.
+
 Ce document rassemble : pourquoi gaster/palera1n ne servent pas de référence ici,
 les contraintes XHCI constatées sur le terrain, les preuves de log, les stratégies
 de récupération qui marchent, les pièges (dont le « faux succès »), et les pistes
@@ -657,7 +666,8 @@ que l'interface dès le départ.
 | **E16bis** | — | diff notre stage 3/4 ↔ gaster gagnant (code + dump config) | table 0x8000 + payload 528 identiques ; 2 diffs : séparation stricte des stages (ResetDevice+ReEnum+handle neuf) ; overwrite **0x02/0x03** avec data 48 (règle 3 falsifiée) | E17 |
 | **E17** | **?** | trace requête-par-requête du gaster gagnant (env `GASTER_TRACE`) | *en attente : device à remettre en DFU normal* | E18 |
 | **E18** | **⚠️** | portage gaster-exact (overwrite 0x02/0x03, pas de rebuild, reset inter-stage, timeouts 5 ms) | overwrite STALL **puis callback EXÉCUTÉ** (device rebooté hors DFU au reset bus — jamais vu avant) ; payload data phase jamais partie (`-7`×6, wLenDone=0) ; blobs byte-exact upstream | E17 : trace gaster gagnant |
-| **E19** | **✅** | P5=H1 + portage P3 + orchestration gaster-exact (IOKit dès stage 1, reset ×3 + final, verify IOKit) | **PWND:[checkm8]** — câble direct, sans hub, sans replug ; attempt 3 `sent=0`/pad 1280 (artefacts) mais STALL corrects partout ; device resté en DFU pwned | — |
+| **E19** | **✅** | P5=H1 + portage P3 + orchestration gaster-exact (IOKit dès stage 1, reset ×3 + final, verify IOKit) | **PWND:[checkm8]** — câble direct, sans hub, sans replug ; attempt 3 `sent=0`/pad 1280 (artefacts) mais STALL corrects partout ; device resté en DFU pwned | E20 |
+| **E20** | **?** | préparation étape [3/8] : `scripts/{ipsw_pull.py,detect_ios.sh,ramdisk_test_ibss.sh}` + découverte SRTG=BootROM (≠ iOS) | outils testés — **run iBSS en attente** | run transition DFU→recovery |
 
 ### Règles M-series validées empiriquement (l'état de l'art actuel)
 
@@ -1414,6 +1424,63 @@ conditions critiques sur cette machine.
 **Verdict global** : objectif du doc atteint — checkm8 fonctionne sur
 Apple Silicon M-series, câble direct, sans hub, sans replug, avec le
 port tr4mpass (payloads byte-exact gaster). E0→E19 clos.
+
+### E20 — Transition post-exploit (étape 3 du pipeline, phase préparatoire)
+
+**Prochaine frontière** : après checkm8, `path_a` exécute 6 étapes de
+plus ([3/8] ramdisk → [8/8] vérification). L'étape [3/8] charge iBSS →
+iBEC → devicetree → ramdisk via `libirecovery` avec **3 reconnexions
+USB** (DFU 0x1227 → recovery 0x1281 → iBEC) — exactement la zone que
+palera1n documente comme fragle sur M-series USB-C (« may require
+manual unplugging and replugging **after** checkm8 »). Problème
+distinct du E19, traité séparément.
+
+**Outils construits** (dans `scripts/`, réutilisables sans agent) :
+
+- `scripts/ipsw_pull.py` — extraction d'UN fichier d'un IPSW distant
+  via HTTP Range (lecture du central directory ZIP en fin de fichier,
+  téléchargement de la seule entrée visée : ~300 Ko au lieu de 2,2 Go).
+  Sous-commandes : `list`, `url-for <device> <build>`, `probe`
+  (extrait + cherche une aiguille, ex. `iBoot-`), `fetch`.
+- `scripts/detect_ios.sh` — attend le device en mode NORMAL et écrit
+  version/build/modèle dans /tmp/ios_{version,build,model}.txt.
+- `scripts/ramdisk_test_ibss.sh` — test A complet : détection iOS →
+  pull iBSS → upload sur DFU pwned → surveillance PID 0x1227→0x1281.
+  Ne touche jamais au stage checkm8 (pré-suppose PWND).
+
+**Découverte SRTG (correction de croyance)** : `SRTG:[iBoot-2234.0.0.3.3]`
+est la version du **BootROM** (SecureROM Tag) de l'A9, PAS celle
+d'iOS — identique sur tous les iPhone 6s. Vérifié empiriquement en
+extrayant les iBSS de 4 IPSW (9.0 → `iBoot-2817.1.93`, 9.0.2 →
+`2817.1.94`, 9.1 → `2817.10.34`, 9.3.5 → `2817.60.2`) : jamais 2234.
+⇒ le serial DFU ne permet pas de déduire la version iOS ; détection
+via `ideviceinfo` (mode normal) nécessaire. Note ajoutée en tête du doc.
+
+**Fait saillant iPhone 6s** : l'IPSW contient DEUX iBSS — `iBSS.n71`
+(A9 TSMC) et `iBSS.n71m` (A9 Samsung, double-sourcing). Le BDID du
+device choisit ; le script essaie les deux.
+
+**Prochain run** (à faire par l'utilisateur) : device actuellement en
+DFU pwned.
+
+```sh
+# Passe 1 (consomme le pwned) : le device boote iOS, on lit la version
+scripts/ramdisk_test_ibss.sh
+# ... détection, téléchargement iBSS, puis "device left pwned DFU"
+
+# Remise en DFU + re-pwn (reproductible, cf. E19) :
+#   boutons DFU puis ./tr4mpass -v
+
+# Passe 2 (détection cachée) : upload iBSS + surveillance PID
+scripts/ramdisk_test_ibss.sh
+```
+
+Critère de succès : `PASS` final (PID 0x1281 observé sans replug). En
+cas d'échec, on saura que la transition USB-C post-pwn est le vrai
+sujet M-series et on travaillera le reconnect (hub recommandé par
+palera1n, ou gestion IOKit custom dans path_a_ramdisk).
+
+| **E20** | **?** | phase préparation étape [3/8] : outils ipsw_pull/detect_ios/ramdisk_test + découverte SRTG≠iOS | outils testés (url-for OK, probe OK sur 4 builds) — **run iBSS en attente** | run |
 
 | Source | Ce qu'elle établit |
 |---|---|
