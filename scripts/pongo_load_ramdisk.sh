@@ -16,9 +16,13 @@
 #   cmd "bootx"     (unless --no-boot)
 #
 # Usage:
-#   pongo_load_ramdisk.sh [--kpf PATH] [--bootargs STR] [--no-boot]
+#   pongo_load_ramdisk.sh [--ramdisk PATH] [--kpf PATH] [--bootargs STR]
+#                         [--no-boot]
+#   --ramdisk overrides TR4MPASS_RAMDISK_PATH (e.g. the slim SSH
+#   ramdisk, TR4MPASS_SSHRD_PATH, for the Path A boot).
 
 set -u
+set -o pipefail
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib.sh
@@ -29,8 +33,10 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 KPF=""
 BOOTARGS=""
 DO_BOOT=1
+RAMDISK=""
 while [ $# -gt 0 ]; do
     case "$1" in
+        --ramdisk)  [ $# -ge 2 ] || fail "--ramdisk needs a value"; RAMDISK="$2"; shift 2 ;;
         --kpf)      [ $# -ge 2 ] || fail "--kpf needs a value"; KPF="$2"; shift 2 ;;
         --bootargs) [ $# -ge 2 ] || fail "--bootargs needs a value"; BOOTARGS="$2"; shift 2 ;;
         --no-boot)  DO_BOOT=0; shift ;;
@@ -45,10 +51,13 @@ ENV_SH="$(state_dir)/images/env.sh"
 require_file "env.sh" "$ENV_SH"
 # shellcheck disable=SC1090
 source "$ENV_SH"
-require_env_var TR4MPASS_RAMDISK_PATH
-require_file "ramdisk" "$TR4MPASS_RAMDISK_PATH"
+if [ -z "$RAMDISK" ]; then
+    require_env_var TR4MPASS_RAMDISK_PATH
+    RAMDISK="$TR4MPASS_RAMDISK_PATH"
+fi
+require_file "ramdisk" "$RAMDISK"
 
-RAMDISK_SZ=$(stat -f %z "$TR4MPASS_RAMDISK_PATH")
+RAMDISK_SZ=$(stat -f %z "$RAMDISK")
 if [ "$RAMDISK_SZ" -gt $((128 * 1024 * 1024)) ]; then
     fail "ramdisk is $RAMDISK_SZ bytes; pongoOS UPLOADSZ_MAX is 128 MiB"
 fi
@@ -79,7 +88,7 @@ run_confirmed() {
 }
 
 step "upload ramdisk ($RAMDISK_SZ bytes)"
-"$UPLOADER" upload "$TR4MPASS_RAMDISK_PATH" 2>&1 | tee -a "$LOG" \
+"$UPLOADER" upload "$RAMDISK" 2>&1 | tee -a "$LOG" \
     || fail "ramdisk upload failed"
 
 run "ramdisk"
