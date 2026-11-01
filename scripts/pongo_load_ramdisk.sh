@@ -106,6 +106,12 @@ if [ -n "$BOOTARGS" ]; then
 fi
 
 if [ "$DO_BOOT" -eq 1 ]; then
+    # xfb: hand the framebuffer to xnu so -v prints the verbose boot
+    # (BSD root: ... / Still waiting for root device) on screen --
+    # without it the screen goes black after 'Booting' and the only
+    # verbose output has nowhere to go (no serial on iPhone).
+    step "cmd: xfb"
+    "$UPLOADER" cmdq "xfb" 2>&1 | tee -a "$LOG" || true
     step "bootx"
     # send bootx, then keep draining stdout: pongo prints the preboot
     # hook / KPF patchset / mount messages as it boots; the USB
