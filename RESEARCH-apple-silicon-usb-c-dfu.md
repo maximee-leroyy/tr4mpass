@@ -1837,3 +1837,22 @@ Détails :
 
 Chaîne finale prouvée : DFU frais → checkm8 (ra1npoc) → stage2 → pongoOS
 shell → ramdisk 18F72 en mémoire + KPF → bootx → iOS patché vivant.
+
+### E31 — ACTIVATION REEL : LE DEVICE EST ACTIVATION-LOCKED
+
+| ID | Type | Constat | Décision/impact | Prochaine action |
+|---|---|---|---|---|
+| **E31** | **ℹ️** | ideviceactivation (libimobiledevice master, build local) → serveur Apple : « Activation Lock — linked to an Apple account s●●●●●@icloud.com » | activation normale IMPOSSIBLE sans les identifiants iCloud du compte lié ; la route tr4mpass (MAD patché + deletescript) est la seule restante SI pas d'accès au compte | décision utilisateur : identifiants disponibles ? |
+
+Détails :
+
+1. `ideviceactivation` absent de Homebrew ; construit depuis
+   libimobiledevice/libideviceactivation master (autogen + make,
+   installé dans ~/.local/opt/ideviceactivation).
+2. `ideviceactivation activate` (device en mode normal, Unactivated) :
+   le serveur répond Activation Lock + demande email/mot de passe en
+   interactif — échec non-interactif attendu, le fond est le lock.
+3. Conséquence directe : les étapes [5/8]-[6/8] de Path A
+   (remplacement mobileactivationd via ramdisk) nécessitent maintenant
+   un boot avec boot-args rd=md0 + deletescript — le ramdisk E30 était
+   en mémoire mais non utilisé (pas de xargs rd=md0 ; caveat documenté).
