@@ -159,7 +159,8 @@ KEEP_LIST="libSystem.B.dylib libsystem_c.dylib libsystem_kernel.dylib \
             libutil.dylib libz.1.dylib libiconv.2.dylib \
             liblzma.5.dylib libbz2.1.0.dylib libc++.1.dylib \
             libcompression.dylib libarchive.2.dylib libintl.8.dylib \
-            dyld"
+            dyld libicucore.A.dylib libMobileGestalt.dylib \
+            libbsm.0.dylib libenergytrace.dylib"
 # E43: /usr/lib/dyld was NOT in the list and the purge deleted it ->
 # launchd exec failed in load_machfile (dyld vnode missing) -> kernel
 # SIGKILL of init -> panic "unexpected SIGKILL of init, namespace 9
@@ -202,6 +203,35 @@ done
 # E43 regression check: /usr/lib/dyld itself must survive the purge
 [ -e "$R/usr/lib/dyld" ] || fail "/usr/lib/dyld missing after slim (E43 panic root cause)"
 [ -x "$R/usr/lib/dyld" ] || fail "/usr/lib/dyld not executable"
+
+# E44 lesson: transitive dylib audit. E44 boot: launchd ran, daemons
+# launched, but restored_external died at dyld time -- CoreFoundation
+# needed libicucore.A.dylib (purged). otool -L on leaf binaries can't
+# see framework deps, so walk one level into every surviving framework
+# dylib + all /usr/lib survivors and check THEIR deps too.
+info "transitive dylib audit (frameworks + usr/lib, one level)"
+AUDIT="$R/usr/lib"
+AUDIT="$AUDIT $(find "$R/System/Library/Frameworks" -name '*.dylib' \
+    -path '*Versions/A*' 2>/dev/null)"
+AUDIT="$AUDIT $(find "$R/System/Library/Frameworks" -maxdepth 4 \
+    -name '*.dylib' ! -path '*Versions*' 2>/dev/null)"
+MISSING2=""
+for b in $AUDIT; do
+    [ -f "$b" ] || continue
+    case "$(xxd -p -l4 "$b" 2>/dev/null)" in
+        cffaedfe|feedfacf) ;;
+        *) continue;;
+    esac
+    for lib in $(otool -L "$b" 2>/dev/null \
+                 | awk '/dylib/{print $1}' | sed 's|.*/||'); do
+        [ "$lib" = "libSystem.B.dylib" ] && continue
+        if ! ls "$R/usr/lib/$lib" >/dev/null 2>&1 \
+           && ! ls "$R/usr/local/lib/$lib" >/dev/null 2>&1; then
+            MISSING2="$MISSING2 ($(basename "$b"):$lib)"
+        fi
+    done
+done
+[ -z "$MISSING2" ] || fail "missing transitive dylibs after slim:$MISSING2"
 
 info "writing minimal mount_filesystems (no seputil/SEP; rd=md0 flow)"
 cat > "$R/usr/bin/mount_filesystems" <<'MFS'
