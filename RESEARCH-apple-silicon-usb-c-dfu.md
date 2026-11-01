@@ -1889,3 +1889,86 @@ Découvertes clés :
    /usr/local/bin/dropbear (mux USB, micro_inetd) + /bin/bash
    /usr/bin/mount_filesystems ; LaunchDaemon com.tr4mpass.dropbear
    RunAtLoad ajouté (launchd du rdsk le lance au boot).
+
+### E32b — PANICS USB « send 4 » : CAUSE RACINE (protocole client pongo)
+
+| ID | Type | Constat | Décision/impact | Prochaine action |
+|---|---|---|---|---|
+| **E32b** | **✅✅** | 2 panics pongoOS `usb bug send 4` (0x73656e642034) causés par le client host : (1) écritures stdin (0x21/3) alors qu'une commande tournait encore, (2) flow 0x21/4 wValue=0 « stall next stdin » + timeout 5s qui ANNULE un transfert EP0 à moitié accepté -> désync de la machine d'état USB de pongo | JAMAIS écrire stdin pendant qu'une commande tourne ; JAMAIS utiliser 0x21/4 wValue=0 ; flow officiel = poller 0xA1/2 (async completion status, 1 octet, 0=idle) avant chaque écriture + stdout via 0xA1/1 ; `run_cmd` = plain 0x21/3 (ce que pongoterm envoie) | `tools/pongo_upload.c` réécrit : `cmd_status` (0xA1/2) + `cmdq <cmd> [expect]` (poll idle -> drain stdout -> 0x21/3 -> stream stdout jusqu'à expect, rc 0/2) |
+
+Découvertes clés :
+
+1. **Protocole client pongoOS** (usbloader.c + pongoterm) :
+   `0x21/1 wLength=0` init upload 1MB ; `0x21/1 wLength=4` =
+   `reallocate_loader_xfer_data` (taille arrondie à 512, DMA armé pour
+   exactement cette taille — padder la queue, ex. 105367579 -> pad 485) ;
+   `0x21/3` = write shell stdin ; `0xA1/1` = read stdout ;
+   `0xA1/2` = command_in_progress (0 = idle). Les transferts de contrôle
+   passent par le user-client **interface** (IOUSBInterfaceInterface245),
+   pas le device client.
+2. Le mécanisme du panic : un timeout host sur une écriture EP0 stallée
+   annule un transfert à moitié accepté -> pongo dévise ; les réécritures
+   suivantes frappent un pipe cassé jusqu'au panic du core USB. Les
+   clients checkra1n n'annulent JAMAIS une écriture EP0 stallée : ils
+   pollent le statut et n'écrivent qu'à idle.
+3. `xargs rd=md0 debug=0x2014e -v wdt=-1` confirmé avec l'expect
+   **minuscule** `set xnu boot arg cmdline` (le device répond en
+   minuscules ; l'expect en casse mixte ne matchait jamais -> le script
+   réessayait en boucle).
+4. Après `bootx` les requêtes 0xA1 renvoient 0xe00002c0 (device déjà en
+   reboot) — attendu, pas une erreur.
+
+### E32c — CAP RÉGION STATIQUE 64 MiB + PANIC CONFIRMÉ LIVE
+
+| ID | Type | Constat | Décision/impact | Prochaine action |
+|---|---|---|---|---|
+| **E32c** | **✅✅** | Live sur device : bootx -> preboot hook -> APFS mount -> KPF patche le kernel DISQUE (≈40 patches, « Found ramdisk » -> patchset ramdisk appliqué) -> `panic: ran out of static region` APRÈS le patchset complet | pongoOS `alloc_static` a un hardcap de **64 MiB** (mm.c: `alloc_static_hardcap` = base + 64 MiB ; `xnu_loadrd` y copie le ramdisk ENTIER, xnu.c:1304, pour qu'il survive dans xnu). Le rdsk de 105 MB ne bootera JAMAIS -> slim obligatoire à ≤ ~56 MiB | build_ssh_rd.sh réécrit en mode slim (voir E33) |
+
+Détails :
+
+1. Source : `/Users/mleroy/.local/share/opencode/tool-output/pongoOS-src/src/kernel/mm.c`
+   (alloc_static, alloc_static_hardcap) et `src/drivers/xnu/xnu.c:1304`
+   (`rd_static_buf = alloc_static(ramdisk_size)`).
+2. Le kernel de boot vient du disque de l'appareil (APFS mount par le
+   preboot hook de pongo) et est patché par KPF sur place — pas besoin
+   d'uploader un kernelcache (kernelcache.release.iphone8b reste
+   disponible mais inutilisé).
+3. Le panic arrive APRÈS « KPF: Applied patchset » — tout le chemin
+   exec est bon ; seul le budget mémoire manque.
+
+### E33 — RAMDISK SSH SLIM : 44 MiB, DANS LE CAP
+
+| ID | Type | Constat | Décision/impact | Prochaine action |
+|---|---|---|---|---|
+| **E33** | **✅✅** | `build_ssh_rd.sh` slim : kit trimmé 20 MiB -> delete `/usr/standalone` (27 MB firmware periph), PrivateFrameworks, Extensions, tout Framework sauf CoreFoundation+IOKit, FDR/FeatureFlags, seputil/SavageUtil/DumpPanic/diskimagesiod, sbin restore-only, purge `/usr/lib` (garde la closure otool des binaires survivants) -> 40 444 KiB utilisés -> volume reconstruit **44 MiB** (recette SSHRD_Script hdiutil create -srcfolder -copyuid root) -> IM4P(rdsk) **46 137 370 octets** | Cap 64 MiB respecté avec ~20 MiB de marge (devicetree + divers) ; verify round-trip : cmp byte-identique + dropbear/restored_external/plist stock/mount_filesystems/bash présents + closure dylib re-vérifiée sur le fs slim | boot device : DFU -> ra1npoc -> pongo_load_ramdisk --kpf --bootargs rd=md0 -> bootx -> SSH iproxy 2222 |
+
+Découvertes clés :
+
+1. **LaunchDaemon redondant supprimé** : le plist STOCK
+   `com.apple.restored_external.plist` lance déjà
+   `/usr/local/bin/restored_external` — chemin que le tar du kit
+   ÉCRASE avec son propre restored_external (execl dropbear + mount).
+   Le plist com.tr4mpass.dropbear ajouté en E32 était donc inutile.
+2. **La purge /usr/lib ne doit toucher que les libs STOCK** : snapshot
+   `ls usr/lib` AVANT la copie du kit ; le kit fournit libncurses/
+   libresolv/libimg4tool/libplist/libssl/crypto/libgeneral/libiosexec
+   — une première passe de purge les avait effacées (le verify post-slim
+   l'a attrapé : ioreg:libncurses.5.4, sftp-server:libresolv.9,
+   img4tool:*).
+3. **Closure otool des survivants** : libSystem(+sous-libs+dyld),
+   libobjc.A (launchd), libutil (mount_apfs), libz/libiconv/liblzma/
+   libbz2/libc++/libcompression/libarchive.2/libintl.8 (kit),
+   libicucore (CoreFoundation). Tout le reste de /usr/lib est
+   restore-only (libnetwork seul = 9.4 MB, libARI 3.7 MB).
+4. **mount_filesystems minimal** (sans seputil/SEP, supprimés) :
+   `#!/bin/bash` + `/sbin/mount_apfs /dev/disk0s1s1 /mnt1` —
+   le volume système 14.6 est disk0s1s1, Data disk0s1s2.
+5. **hdiutil create -srcfolder se lance sur le volume ENCORE MONTÉ**
+   (sshrd.sh:313 fait pareil, detach après) ; UDRW (pas UDZO) car
+   l'IM4P doit wrapper les octets bruts du volume ; fallback sans
+   -copyuid root si le privilège manque (le ramdisk tourne tout en
+   root, la propriété n'importe pas).
+6. Bugs d'édition corrigés en passant : wrap IM4P pointait sur
+   rd.dmg (stock) au lieu de rd_small.dmg (slim) — exactement la
+   classe de bug du point 6 d'E32 ; bloc de commentaire dupliqué
+   lors de l'édition ; arithmétique $(( )) imbriquée invalide.

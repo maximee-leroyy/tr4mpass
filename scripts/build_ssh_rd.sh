@@ -96,6 +96,9 @@ info "trimmed kit: ${KIT_SZ} KiB; volume free: ${FREE_KB} KiB"
 if [ "$KIT_SZ" -ge "$FREE_KB" ]; then
     fail "trimmed kit (${KIT_SZ} KiB) does not fit (${FREE_KB} KiB free)"
 fi
+# snapshot the stock /usr/lib contents BEFORE the kit copy: the later
+# dylib purge must delete only stock libs, never kit-provided ones
+ls "$R/usr/lib" > "$WORK/stock_libs.txt" || fail "stock lib snapshot failed"
 cp -Rp "$KIT/." "$R/" || fail "kit copy failed"
 rm -rf "$KIT"
 # note: the kit's own dylibs went into $R/usr/lib with the copy (the
@@ -152,8 +155,9 @@ KEEP_LIST="libSystem.B.dylib libsystem_c.dylib libsystem_kernel.dylib \
             liblzma.5.dylib libbz2.1.0.dylib libc++.1.dylib \
             libcompression.dylib libarchive.2.dylib libintl.8.dylib"
 cd "$R/usr/lib" || fail "usr/lib missing"
-for f in *.dylib *.tbd dyld; do
+for f in *; do
     [ -e "$f" ] || continue
+    grep -qxF "$f" "$WORK/stock_libs.txt" || continue  # kit-provided: keep
     case " $KEEP_LIST " in
         *" $f "*) ;;
         *) rm -f "$f" ;;
@@ -198,7 +202,8 @@ sync
 # volume size: target = used rounded up to 4 MiB + 4 MiB slack,
 # clamped to [44, 56] MiB -- must stay under the 64 MiB static cap
 # with headroom for devicetree + misc pongo allocations.
-USED_MB=$(((USED_KB + 4095) / 4096 + 1) * 4)
+USED_MB=$(( (USED_KB + 4095) / 4096 ))
+USED_MB=$(( USED_MB * 4 + 4 ))
 if [ "$USED_MB" -lt 44 ]; then USED_MB=44; fi
 if [ "$USED_MB" -gt 56 ]; then USED_MB=56; fi
 info "rebuilding as a ${USED_MB}MiB raw HFS volume"
