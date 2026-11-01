@@ -650,6 +650,7 @@ que l'interface dès le départ.
 | **E16bis** | — | diff notre stage 3/4 ↔ gaster gagnant (code + dump config) | table 0x8000 + payload 528 identiques ; 2 diffs : séparation stricte des stages (ResetDevice+ReEnum+handle neuf) ; overwrite **0x02/0x03** avec data 48 (règle 3 falsifiée) | E17 |
 | **E17** | **?** | trace requête-par-requête du gaster gagnant (env `GASTER_TRACE`) | *en attente : device à remettre en DFU normal* | E18 |
 | **E18** | **⚠️** | portage gaster-exact (overwrite 0x02/0x03, pas de rebuild, reset inter-stage, timeouts 5 ms) | overwrite STALL **puis callback EXÉCUTÉ** (device rebooté hors DFU au reset bus — jamais vu avant) ; payload data phase jamais partie (`-7`×6, wLenDone=0) ; blobs byte-exact upstream | E17 : trace gaster gagnant |
+| **E19** | **?** | P5=H1 (~95%) + portage P3 + audit orchestration : IOKit dès stage 1, reset inter-stage ×3, reset final = trigger payload, padding `0x500−sz` (1216), verify IOKit quand libusb fermé | *code fait, build 62/62 — run en attente (device en DFU normal)* | verdict |
 
 ### Règles M-series validées empiriquement (l'état de l'art actuel)
 
@@ -1284,6 +1285,81 @@ champ au timeout).
    gaster, 0 chez nous) — découle de (2) ;
 4. vérifier que notre inter-stage reset entre spray et patch ne
    diffère pas du sien (ResetDevice+ReEnumerate, close, reopen).
+
+### E19 — Portage complet des verdicts (P1–P6 appliqués)
+
+**Verdicts sous-agents** (2/3 ont livré ; le 3e, audit lecture-seule,
+a refusé — refait à la main, findings ci-dessous) :
+
+- **P5 = H1, confiance ~95%** (`/tmp/sb-p5-verdict.md`, 17 sources) :
+  sur IOKit `DeviceRequestTO`, un timeout hôte `wLenDone=0` **ne dit
+  rien des octets déjà ACKés device-side** — la data phase d'un DNLOAD
+  timeouté peut être intégralement livrée. Preuve empirique interne :
+  le run gagnant rapporte `ret=0xe0004051 sz=0` sur le payload 528
+  **et le PWND apparaît** — les 528 o n'existent que dans cette data
+  phase. Même chose pour le STALL d'overwrite (48 o) : sz=0 ET hijack
+  confirmé. ⇒ **notre conclusion E18 « payload jamais parti » était
+  fausse** : le payload est probablement arrivé, mais dans un mauvais
+  état de buffer (P4 confirmé).
+- **P3 portage** (`checkm8_stages.c`, 177+/54−) : (1) stage 1 =
+  cycle gaster exact DNLOAD16 → zero-len → 3×GETSTATUS (MANIFEST
+  walk vérifié par (status,state)) → DNLOAD64, tout en
+  `DeviceRequestTO` 5 ms, échec = CLRSTATUS + fail-fast ; (2) stage 2
+  attempt 3 = `DeviceRequestAsyncTO` + abort immédiat via
+  `iokit_usb_ctrl_transfer_async_abort` (même infra que
+  request_stall/leak — port direct du `send_usb_control_request_async`
+  IOKit de gaster) → cible `sent=64` + STALL ; (3) padding =
+  `0x500 − sz_réel` (1216 si 64). Build 0 warning, 62/62.
+
+**Audit orchestration (refait à la main) — 4 divergences trouvées,
+toutes corrigées** (`checkm8.c`) :
+
+1. **Le run gagnant est IOKit de bout en bout** : `make macos` de
+   gaster compile SANS `-DHAVE_LIBUSB` → les 4 stages tournent sur
+   `DeviceRequestTO`/`AsyncTO` (les IOReturns bruts `0xe000404f`/
+   `0xe0004051` de la trace le prouvent). Nous : stages 1-2 en
+   libusb → attempt 3 prenait le cancel libusb (`sent=0`, la
+   divergence P3b complète). **Corrigé : IOKit activé AVANT le stage 1**
+   (`usb_ctrl_transfer_raw` route déjà vers IOKit quand actif) ;
+   garde `checkm8_stage_reset` assoupli (handle libusb NULL autorisé
+   si IOKit actif).
+2. **Reset inter-stage manquant reset→setup** : gaster reset après
+   CHAQUE stage (L1347 dans la boucle). Nous : seulement spray→patch.
+   Le nouveau cycle stage 1 finit par un DNLOAD 64 chargé → le stage 2
+   devait démarrer sur un handle frais. **Corrigé : reset après chaque
+   stage** (helper `dfu_iokit_interstage_reset` : ResetDevice +
+   ReEnumerate + deactivate + 250 ms + activate), aux 3 frontières.
+3. **Reset FINAL manquant = le trigger d'exécution** : après le
+   dernier stage, gaster fait reset_usb_handle **inconditionnellement**
+   avant close (L1347→1352) — c'est CE ResetDevice+ReEnumerate qui
+   déclenche le callback `dfu_handle_bus_reset` hijacké, i.e. **qui
+   exécute le payload**. Nous : simple `deactivate()` sans reset.
+   **Corrigé : reset final avant deactivate**, puis `checkm8_verify`
+   (qui gère déjà le chemin IOKit) relit le serial re-énuméré → PWND.
+4. **Vérifié sans divergence** : spray A9 (stall/leak 64/leak 193/
+   no_leak 193/CLRSTATUS len=193, IOReturns identiques à la trace),
+   overwrite 0x02/0x03+48 o STALL, payload 528+suffix 16+zero-len+
+   GETSTATUS×3 en 5 ms results-ignored, E15 derrière
+   `TR4MPASS_PRE_STATUS` (défaut OFF). Détails gaster notés : sa
+   boucle spray reloooped stall/leak/no_leak jusqu'au succès et il
+   exige le STALL de l'overwrite (sinon échec → retry complet) — nos
+   chemins loggent et continuent, acceptable pour l'instant.
+
+**Build/tests** : 0 warning, 62/62.
+
+**Run de validation (à faire par l'utilisateur)** — device en DFU
+normal (il a rebooté sous iOS en E18) :
+
+```sh
+cd /Users/mleroy/Documents/git/github/maxime1907/tr4mpass && ./tr4mpass -v 2>&1 | tee /tmp/tr4mpass-e19.log
+ioreg -p IOUSB -l -w0 | grep -i "USB Serial Number"
+```
+
+Attendu gaster-exact : stage 1 = 6 requêtes SYNC toutes `ret=0`
+(16/0/6/6/6/64) ; setup attempt 3 = `sent=64` + STALL ; padding
+**1216** STALL (`0xe000404f`) ; spray identique E18 ; overwrite 48
+STALL ; payload/suffix/zero-len/GETSTATUS `0xe0004051` (ignorés) ;
+**reset final** ; serial `sz=226` avec `PWND:[checkm8]`.
 
 | Source | Ce qu'elle établit |
 |---|---|

