@@ -1809,3 +1809,31 @@ Détails techniques (tous vérifiés live, device en shell 2.5.1 PID 0x4141) :
 
 Outils : `tools/pongo_upload` (upload|cmd|cmdq|query|drain|pad).
 Script : `scripts/pongo_load_ramdisk.sh` (cmdq déterministe).
+
+### E30 — BOOTX AVEC KPF : LE DEVICE BOOTE, PAS DE PANIQUE
+
+| ID | Type | Constat | Décision/impact | Prochaine action |
+|---|---|---|---|---|
+| **E30** | **✅✅** | bootx avec KPF modloadé → boot iOS OK, device vivant (iPhone8,4, 14.6, Unactivated, ideviceinfo répond) | E29 paniquait car KPF absent ; avec KPF le kernel patché accepte le boot | run scripté complet reproductible ; activation ensuite |
+
+Détails :
+
+1. **Cause de la panique E29 confirmée** : bootx avec ramdisk mais sans KPF
+   → kernel non patché → panic. Le KPF de checkra1n (Mach-O cffaedfe,
+   0x15648 octets) vit à 0x3F308 dans le blob composé
+   `dumpfiles/pongoOS` (1 414 476 octets) ; extraction scriptée dans
+   build_ra1npoc.sh → `images/kpf_checkra1n.bin`.
+2. **Run scripté complet** : ra1npoc (DFU frais) → shell →
+   `pongo_load_ramdisk.sh --kpf kpf_checkra1n.bin` → upload ramdisk (105 Mo,
+   pad 485) → `ramdisk` → upload KPF (87 624, pad 440) → `modload`
+   (bannière KPF à l'écran, vu par l'utilisateur) → `bootx` → boot OK.
+3. **Bruit USB M4** : le KPF upload a stallé à 0 (0xe0004051
+   transaction timeout) puis récupéré via ClearPipeStallBothEnds ; la
+   réponse `modload` a timeout côté hôte (le shell occupé) et le
+   `bootx` write a eu 0xe00002ed — mais le boot est quand même passé :
+   ces erreurs sont côté hôte, le device continue.
+4. Le ramdisk est en RAM ; aucun changement persistant. Unattended
+   reboot = retour iOS normal.
+
+Chaîne finale prouvée : DFU frais → checkm8 (ra1npoc) → stage2 → pongoOS
+shell → ramdisk 18F72 en mémoire + KPF → bootx → iOS patché vivant.

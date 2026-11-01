@@ -49,6 +49,19 @@ clang -O2 -Wall -o "$OUT_DIR/pongo_upload" \
     -framework CoreFoundation -framework IOKit >> "$LOG" 2>&1
 require_file "pongo_upload" "$OUT_DIR/pongo_upload"
 
+# Extract the checkra1n KPF (kernel patcher, Mach-O pongo module) from
+# the composed blob -- E29 panic fix: bootx with a ramdisk needs the KPF
+# loaded (modload) or the unpatched kernel panics.
+KPF_OUT="$(state_dir)/images/kpf_checkra1n.bin"
+mkdir -p "$(dirname "$KPF_OUT")"
+python3 - "$RA1NPOC_DIR/dumpfiles/pongoOS" "$KPF_OUT" >> "$LOG" 2>&1 <<'PYEOF'
+import sys
+data = open(sys.argv[1], 'rb').read()
+open(sys.argv[2], 'wb').write(data[0x3F308:0x3F308 + 0x15648])
+PYEOF
+require_file "kpf_checkra1n.bin" "$KPF_OUT"
+
 echo "OK: $OUT_DIR/ra1npoc"
 echo "OK: $OUT_DIR/pongoterm"
 echo "OK: $OUT_DIR/pongo_upload"
+echo "OK: $KPF_OUT"

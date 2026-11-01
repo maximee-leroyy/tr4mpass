@@ -63,7 +63,7 @@ run() {
     "$UPLOADER" cmdq "$1" 2>&1 | tee -a "$LOG" || fail "cmd '$1' failed"
 }
 
-step "upload ramdisk ($RAMDISK bytes)"
+step "upload ramdisk ($RAMDISK_SZ bytes)"
 "$UPLOADER" upload "$TR4MPASS_RAMDISK_PATH" 2>&1 | tee -a "$LOG" \
     || fail "ramdisk upload failed"
 
