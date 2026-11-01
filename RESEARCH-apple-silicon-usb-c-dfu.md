@@ -16,6 +16,13 @@ les contraintes XHCI constatées sur le terrain, les preuves de log, les straté
 de récupération qui marchent, les pièges (dont le « faux succès »), et les pistes
 restantes.
 
+> **STATUT (E19, 2026-11-01) : OBJECTIF ATTEINT ✅** — `PWND:[checkm8]`
+> obtenu sur cette configuration exacte (câble direct, sans hub, sans
+> replug) avec le port tr4mpass. Recette gagnante en §11/E19 :
+> IOKit de bout en bout + cycle stage 1 gaster + reset inter-stage à
+> chaque frontière + reset final (trigger d'exécution) + overwrite
+> 0x02/0x03+48 + résultats post-overwrite ignorés.
+
 ---
 
 ## 1. Pourquoi gaster ne peut pas être copié verbatim
@@ -650,7 +657,7 @@ que l'interface dès le départ.
 | **E16bis** | — | diff notre stage 3/4 ↔ gaster gagnant (code + dump config) | table 0x8000 + payload 528 identiques ; 2 diffs : séparation stricte des stages (ResetDevice+ReEnum+handle neuf) ; overwrite **0x02/0x03** avec data 48 (règle 3 falsifiée) | E17 |
 | **E17** | **?** | trace requête-par-requête du gaster gagnant (env `GASTER_TRACE`) | *en attente : device à remettre en DFU normal* | E18 |
 | **E18** | **⚠️** | portage gaster-exact (overwrite 0x02/0x03, pas de rebuild, reset inter-stage, timeouts 5 ms) | overwrite STALL **puis callback EXÉCUTÉ** (device rebooté hors DFU au reset bus — jamais vu avant) ; payload data phase jamais partie (`-7`×6, wLenDone=0) ; blobs byte-exact upstream | E17 : trace gaster gagnant |
-| **E19** | **?** | P5=H1 (~95%) + portage P3 + audit orchestration : IOKit dès stage 1, reset inter-stage ×3, reset final = trigger payload, padding `0x500−sz` (1216), verify IOKit quand libusb fermé | *code fait, build 62/62 — run en attente (device en DFU normal)* | verdict |
+| **E19** | **✅** | P5=H1 + portage P3 + orchestration gaster-exact (IOKit dès stage 1, reset ×3 + final, verify IOKit) | **PWND:[checkm8]** — câble direct, sans hub, sans replug ; attempt 3 `sent=0`/pad 1280 (artefacts) mais STALL corrects partout ; device resté en DFU pwned | — |
 
 ### Règles M-series validées empiriquement (l'état de l'art actuel)
 
@@ -1360,6 +1367,53 @@ Attendu gaster-exact : stage 1 = 6 requêtes SYNC toutes `ret=0`
 **1216** STALL (`0xe000404f`) ; spray identique E18 ; overwrite 48
 STALL ; payload/suffix/zero-len/GETSTATUS `0xe0004051` (ignorés) ;
 **reset final** ; serial `sz=226` avec `PWND:[checkm8]`.
+
+### E19 — RÉSULTAT : **PWND:[checkm8] OBTENU** ✅
+
+Run utilisateur, device en DFU normal, câble direct USB-C→Lightning,
+sans hub, sans replug. Log `/tmp/tr4mpass-e19.log`. Preuve :
+
+```
+"USB Serial Number" = "CPID:8000 CPRV:20 CPFM:03 SCEP:01 BDID:02
+ECID:000001756F4E751C IBFL:1C SRTG:[iBoot-2234.0.0.3.3] PWND:[checkm8]"
+```
+
+`checkm8_verify: device processed successfully` (deux lectures
+cohérentes). Le device est resté en DFU pwned (pas de reboot).
+
+**Séquence réellement gagnante** (vs prédictions E19) :
+
+| Étape | Prédit (E19) | Réel (E19) |
+|---|---|---|
+| transport | IOKit dès stage 1 | ✔ `IOKit active for ALL stages` |
+| stage 1 | cycle gaster complet | ✔ cycle exécuté, stage 1 OK |
+| resets inter-stage | ×3 + final | ✔ ×3 + final (jamais de quit-DFU) |
+| attempt 3 | `sent=64` + STALL | **`sent=0`** (artefact async, cf. dessous) |
+| padding | 1216 | **1280** — mais **STALL (-9)** ✔ |
+| overwrite 0x02/0x03+48 | STALL | ✔ STALL (`-9`, "UAF write landed") |
+| payload 528/suffix/zero-len/GETSTATUS | `0xe0004051` ignorés | ✔ `-7` ignorés |
+| reset final → serial | PWND | ✔ **PWND:[checkm8]** |
+
+**Lecture scientifique de l'écart attempt 3** : le chemin async IOKit a
+renvoyé `sent=0` (le compte hôte n'a pas capté les octets partis avant
+l'abort — même famille d'artefact que P5/H1 : ce que rapporte l'hôte au
+moment d'un abort n'est pas ce que le device a ACKé). Le device a
+vraisemblablement accepté le 1er paquet 64 o **côté sien**, puis le
+padding 1280 a STALLé exactement comme le 1216 de gaster. Deux lectures
+possibles, indiscernables dans ce run : (a) la taille du padding a une
+tolérance large (le rôle du pad est de consommer le trou jusqu'au
+STALL, la frontière est déterminée device-side) ; (b) les octets
+réellement ACKés diffèrent du compte hôte et l'alignement s'est fait
+quand même. **Ce qui est établi** : la recette gagnante complète =
+IOKit de bout en bout + cycle stage 1 gaster + reset inter-stage à
+CHAQUE frontière + reset final (trigger d'exécution) + overwrite
+0x02/0x03+48 + résultats post-overwrite ignorés. Les tailles padding
+exactes (1216 vs 1280) et le compte attempt 3 ne sont **pas** des
+conditions critiques sur cette machine.
+
+**Verdict global** : objectif du doc atteint — checkm8 fonctionne sur
+Apple Silicon M-series, câble direct, sans hub, sans replug, avec le
+port tr4mpass (payloads byte-exact gaster). E0→E19 clos.
 
 | Source | Ce qu'elle établit |
 |---|---|

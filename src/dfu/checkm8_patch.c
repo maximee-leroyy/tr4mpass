@@ -807,7 +807,7 @@ int checkm8_stage_patch(dfu_ctx_t *ctx)
         #undef IOKIT_XFER
 
         ctx->phase = DFU_PHASE_PATCH;
-        log_info("checkm8: stage 4 complete -- E11 (shape 0x00/0x00, "
+        log_info("checkm8: stage 4 complete -- E19 (overwrite 0x02/0x03+48, "
                  "gaster order, device user client)");
         return 0;
     }
