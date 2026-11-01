@@ -40,6 +40,10 @@ static libusb_context *g_ctx = NULL;
 static char    g_pre_claim_serial[DFU_SERIAL_MAX];
 static uint8_t g_pre_claim_iserial_idx;
 
+static int read_string_descriptor_utf16_ascii(libusb_device_handle *handle,
+                                              uint8_t index,
+                                              unsigned char *buf, size_t buf_len);
+
 int usb_dfu_init(void)
 {
     int ret;
@@ -137,10 +141,10 @@ int usb_dfu_find(libusb_device_handle **handle, uint8_t *iserial_out)
                 int n = 0;
                 int attempt;
                 for (attempt = 0; attempt < 5; attempt++) {
-                    n = libusb_get_string_descriptor_ascii(
+                    n = read_string_descriptor_utf16_ascii(
                             *handle, desc.iSerialNumber,
                             (unsigned char *)g_pre_claim_serial,
-                            (int)sizeof(g_pre_claim_serial) - 1);
+                            sizeof(g_pre_claim_serial));
                     if (n > 0)
                         break;
                     if (attempt < 4)
@@ -351,15 +355,9 @@ static int try_read_serial_descriptor(libusb_device_handle *handle,
         return LIBUSB_ERROR_INVALID_PARAM;
 
     for (attempt = 0; attempt < 3; attempt++) {
-        ret = libusb_get_string_descriptor_ascii(handle, index,
-                                                 buf, (int)buf_len);
+        ret = read_string_descriptor_utf16_ascii(handle, index, buf, buf_len);
         if (ret > 0)
             break;
-        if (ret == 0 || ret == LIBUSB_ERROR_TIMEOUT) {
-            int fb = read_string_descriptor_utf16_ascii(handle, index, buf, buf_len);
-            if (fb > 0)
-                return fb;
-        }
         if (ret >= 0)
             break;
         if (ret != LIBUSB_ERROR_PIPE && ret != LIBUSB_ERROR_TIMEOUT)

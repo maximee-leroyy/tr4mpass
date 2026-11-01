@@ -37,6 +37,7 @@ int  iokit_usb_abort_pipe_zero(void);
 int  iokit_usb_read_serial(uint8_t iserial_idx, char *out, size_t outsz);
 int  iokit_usb_reset_device(void);
 int  iokit_usb_reenumerate(void);
+int  iokit_usb_recover_bus(void);
 
 #endif /* __APPLE__ */
 #endif /* IOKIT_USB_H */

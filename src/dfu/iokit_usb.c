@@ -153,7 +153,7 @@ int iokit_usb_ctrl_transfer(uint8_t bmRequestType, uint8_t bRequest,
     if (kr == kIOReturnSuccess)
         return (int)req.wLenDone;
 
-    if (kr == (IOReturn)0xe0004051) {
+    if (kr == (IOReturn)0xe0004051 || kr == kIOReturnTimeout) {
         log_debug("iokit_usb: timeout (wLenDone=%u)", req.wLenDone);
         return LIBUSB_ERROR_TIMEOUT;
     }
@@ -164,6 +164,36 @@ int iokit_usb_ctrl_transfer(uint8_t bmRequestType, uint8_t bRequest,
     if (kr == kIOReturnAborted) {
         log_debug("iokit_usb: aborted (wLenDone=%u)", req.wLenDone);
         return LIBUSB_ERROR_INTERRUPTED;
+    }
+
+    /*
+     * kIOReturnNoDevice: the IOService behind this handle died -- the
+     * device re-enumerated (e.g. after a host-side abort glitched EP0).
+     * Nothing was sent on the wire, so transparently find the new
+     * service and retry ONCE.  If the device is physically gone,
+     * activate() fails and we return NO_DEVICE.
+     */
+    if (kr == kIOReturnNoDevice) {
+        log_info("iokit_usb: kIOReturnNoDevice -- stale IOService, "
+                 "re-activating handle and retrying");
+        iokit_usb_deactivate();
+        usleep(100000); /* let re-enumeration settle */
+        if (iokit_usb_activate() != 0)
+            return LIBUSB_ERROR_NO_DEVICE;
+
+        memset(&req, 0, sizeof(req));
+        req.bmRequestType = bmRequestType;
+        req.bRequest      = bRequest;
+        req.wValue        = wValue;
+        req.wIndex        = wIndex;
+        req.wLength       = wLength;
+        req.pData         = data;
+        req.completionTimeout = timeout_ms;
+        req.noDataTimeout     = timeout_ms;
+
+        kr = (*g_device)->DeviceRequestTO(g_device, &req);
+        if (kr == kIOReturnSuccess)
+            return (int)req.wLenDone;
     }
 
     log_warn("iokit_usb: DeviceRequestTO failed: IOReturn=0x%x wLenDone=%u",
@@ -218,6 +248,42 @@ int iokit_usb_reenumerate(void)
     if (!g_active || !g_device)
         return -1;
     (*g_device)->USBDeviceReEnumerate(g_device, 0);
+    return 0;
+}
+
+/*
+ * Last-resort recovery: force the BootROM back to a fresh DFU entry.
+ *
+ * Needed when a stage-4 bail-out leaves EP0 halted (the overwrite STALL
+ * halt was never cleared, or the DFU state machine is wedged): every
+ * later control request -- including libusb GET_STATUS in stage 1 of the
+ * NEXT run -- times out, and the device looks "found" but dead.
+ *
+ * A port-level ResetDevice + USBDeviceReEnumerate makes the device
+ * re-enumerate into clean DFU.  Caller must have closed any libusb
+ * handle first (exclusive access); if the IOKit handle is not open yet
+ * we open and close it ourselves.
+ */
+int iokit_usb_recover_bus(void)
+{
+    int own = 0;
+
+    if (!g_active) {
+        if (iokit_usb_activate() != 0) {
+            log_warn("iokit_usb: recover_bus -- could not open device");
+            return -1;
+        }
+        own = 1;
+    }
+
+    log_info("iokit_usb: recovering device -- ResetDevice + ReEnumerate");
+    (*g_device)->ResetDevice(g_device);
+    usleep(200000);
+    (*g_device)->USBDeviceReEnumerate(g_device, 0);
+    usleep(500000);
+
+    if (own)
+        iokit_usb_deactivate();
     return 0;
 }
 

