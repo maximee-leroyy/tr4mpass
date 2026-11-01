@@ -158,7 +158,14 @@ KEEP_LIST="libSystem.B.dylib libsystem_c.dylib libsystem_kernel.dylib \
             libobjc.A.dylib libobjc.trie.dylib libc++abi.dylib \
             libutil.dylib libz.1.dylib libiconv.2.dylib \
             liblzma.5.dylib libbz2.1.0.dylib libc++.1.dylib \
-            libcompression.dylib libarchive.2.dylib libintl.8.dylib"
+            libcompression.dylib libarchive.2.dylib libintl.8.dylib \
+            dyld"
+# E43: /usr/lib/dyld was NOT in the list and the purge deleted it ->
+# launchd exec failed in load_machfile (dyld vnode missing) -> kernel
+# SIGKILL of init -> panic "unexpected SIGKILL of init, namespace 9
+# (OS_REASON_EXEC) code 0x1 (EXEC_EXIT_REASON_BAD_MACHO)". otool -L
+# cannot catch this: it prints LC_LOAD_DYLIB entries, never the
+# LC_LOAD_DYLINKER path. dyld is checked explicitly below.
 cd "$R/usr/lib" || fail "usr/lib missing"
 for f in *; do
     [ -e "$f" ] || continue
@@ -191,6 +198,10 @@ for b in "$R"/usr/local/bin/dropbear "$R"/bin/bash "$R"/bin/launchctl \
     done
 done
 [ -z "$MISSING" ] || fail "missing dylibs after slim:$MISSING"
+
+# E43 regression check: /usr/lib/dyld itself must survive the purge
+[ -e "$R/usr/lib/dyld" ] || fail "/usr/lib/dyld missing after slim (E43 panic root cause)"
+[ -x "$R/usr/lib/dyld" ] || fail "/usr/lib/dyld not executable"
 
 info "writing minimal mount_filesystems (no seputil/SEP; rd=md0 flow)"
 cat > "$R/usr/bin/mount_filesystems" <<'MFS'
