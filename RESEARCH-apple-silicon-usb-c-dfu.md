@@ -721,6 +721,30 @@ Le test A coûte 2 minutes et décide.
 
 | **E20bis** | **ℹ️** | analyse palera1n v3.0.0-beta.3 : route pongoOS (1 reconnexion) vs route IPSW (3 reconnexions) ; yolo_s8000.bin embarqué ; Pongo.bin/ramdisk.dmg = artefacts CI | décision repoussée au résultat du test A | run iBSS |
 
+**E20bis-addendum — palera1n ne fait AUCUNE activation** (grep exhaustif
+sur tout l'arbre : 0 occurrence de « activation », « hacktivation »,
+« setup.app », « mobileactivation »). Ce que palera1n fait réellement,
+en 3 couches :
+
+| Couche | Où | Persiste au reboot |
+|---|---|---|
+| patches kernel (KPF : AMFI, sandbox, signatures) | **RAM seulement** | ❌ non |
+| bootstrap (Sileo, tweaks) | 2ᵉ volume APFS « fakefs » (iOS 15+) ou `/var/jb` | ✅ oui |
+| app palera1nLoader | `/Applications` | ✅ oui |
+
+Séquence réelle (`pongo_helper.c::send_full_pongo_jailbreak`) :
+`fuse lock` → `sep auto` → upload KPF → `modload` → upload ramdisk →
+`ramdisk` → upload binpack → `overlay` → `xargs <boot_args>` →
+`bootx`. **Aucune modification d'iOS sur disque** : le kernel réel
+démarre avec des patches appliqués en RAM. D'où le caractère
+semi-tethered (relancer l'outil après chaque reboot).
+
+⇒ Pour notre objectif : un device **non activé** (bloqué sur Setup)
+le reste après palera1n. palera1n ne fournit ni record d'activation,
+ni remplacement de mobileactivationd, ni deletescript, ni préservation
+du Signal. **Seul emprunt possible : le transport USB** (1 transition
+au lieu de 3). Tout le pipeline [4/8]→[8/8] reste du code tr4mpass.
+
 ### Règles M-series validées empiriquement (l'état de l'art actuel)
 
 1. Spray : transport **async + abort en flight** (1 ms), jamais synchrone ;
