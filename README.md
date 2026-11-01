@@ -219,6 +219,20 @@ The codebase is written in C99 (21 source files, 20 headers). Every file is unde
 
 ---
 
+## How This Differs From a Jailbreak Tool
+
+checkm8 is shared with tools like [palera1n](https://github.com/palera1n/palera1n),
+but the objective is not. This toolkit exists to **activate** a device stuck on
+the Setup Assistant screen; a jailbreak tool exists to run unsigned code
+permanently.
+
+The two consume the same first steps (exploit, temporary execution environment)
+and then diverge completely. Full route comparison, Mermaid diagrams and a
+capability-by-capability table:
+[`COMPARISON-palera1n-vs-tr4mpass.md`](COMPARISON-palera1n-vs-tr4mpass.md).
+
+---
+
 ## Disclaimer
 
 This tool is for **authorized use only**.
