@@ -160,7 +160,7 @@ KEEP_LIST="libSystem.B.dylib libsystem_c.dylib libsystem_kernel.dylib \
             liblzma.5.dylib libbz2.1.0.dylib libc++.1.dylib \
             libcompression.dylib libarchive.2.dylib libintl.8.dylib \
             dyld libicucore.A.dylib libMobileGestalt.dylib \
-            libbsm.0.dylib libenergytrace.dylib"
+            libbsm.0.dylib libenergytrace.dylib libcharset.1.dylib"
 # E43: /usr/lib/dyld was NOT in the list and the purge deleted it ->
 # launchd exec failed in load_machfile (dyld vnode missing) -> kernel
 # SIGKILL of init -> panic "unexpected SIGKILL of init, namespace 9
