@@ -135,6 +135,11 @@ rm -f  "$R/usr/sbin/asr" "$R/usr/sbin/hdik" "$R/usr/sbin/mtree" \
        "$R/usr/sbin/syslogd" "$R/usr/sbin/fsck" "$R/usr/sbin/fsck_hfs" \
        "$R/usr/sbin/fsck_apfs" "$R/usr/sbin/apfs_hfs_convert" \
        "$R/usr/sbin/newfs_apfs" "$R/usr/sbin/newfs_hfs"
+# E42 lesson: KEEP the binaries the 4 stock ramdisk LaunchDaemons
+# reference -- their plists stay, a daemon that cannot exec dies at
+# boot; the E42 boot mounted rootfs + started launchd but the device
+# rebooted to iOS (userspace died). Restored: syslogd,
+# diskimagesiod, PurpleReverseProxy (all small vs the 27MB firmware).
 # /usr/lib: keep ONLY dylibs needed by what survives (kit binaries +
 # launchd + mount tools + CoreFoundation). Verified by otool closure
 # over the kit tar + sbin/mount_apfs (E33): libSystem(+sub-libs+dyld,
