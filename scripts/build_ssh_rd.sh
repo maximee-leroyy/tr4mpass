@@ -231,7 +231,13 @@ detach
 trap - EXIT
 
 info "wrapping the SLIM volume into IM4P(rdsk)"
-# NOTE: wrap $WORK/rd_small.dmg (the 48 MiB rebuild), NOT the stock
+# TWO artifacts:
+#   - RAW volume (rd_small.dmg): what xnu actually consumes as md0
+#   - IM4P(rdsk) wrapper: E32c-proven to be detected by the KPF
+#     ("Found ramdisk" fired with the IM4P-wrapped stock rdsk), used
+#     as the default upload + archive. The KPF strings include
+#     "Found old-style rdsk!" (it parses the IM4P(rdsk) container).
+# NOTE: wrap $WORK/rd_small.dmg (the slim rebuild), NOT the stock
 # rd.dmg -- E32 shipped a 105 MB IM4P because of exactly this wiring
 # mistake waiting to happen (rd.dmg stays around from step 1).
 ipsw img4 im4p create --type rdsk --compress none -o "$OUT" \
@@ -241,6 +247,9 @@ info "IM4P size: $OUT_SZ bytes"
 if [ "$OUT_SZ" -gt $((128 * 1024 * 1024)) ]; then
     fail "IM4P $OUT_SZ > 128 MiB pongoOS upload cap"
 fi
+RAW_OUT="$(state_dir)/images/ramdisk_ssh_raw.hfs"
+cp "$WORK/rd_small.dmg" "$RAW_OUT"
+info "raw volume copy: $RAW_OUT"
 
 info "verify: extract the rebuilt payload and mount it"
 ipsw img4 im4p extract "$OUT" -o "$WORK/verify.hfs" >/dev/null \
@@ -263,10 +272,13 @@ hdiutil attach -readonly -mountpoint "$MNT" "$WORK/verify.dmg" >/dev/null \
 hdiutil detach "$MNT" >/dev/null
 
 ENV_SH="$(state_dir)/images/env.sh"
-if grep -q TR4MPASS_SSHRD_PATH "$ENV_SH" 2>/dev/null; then
-    sed -i '' 's|export TR4MPASS_SSHRD_PATH=.*|export TR4MPASS_SSHRD_PATH="'"$OUT"'"|' "$ENV_SH"
-else
-    echo 'export TR4MPASS_SSHRD_PATH="'"$OUT"'"' >> "$ENV_SH"
-fi
+for pair in "TR4MPASS_SSHRD_PATH|$OUT" "TR4MPASS_SSHRD_RAW_PATH|$RAW_OUT"; do
+    KEY="${pair%%|*}"; VAL="${pair#*|}"
+    if grep -q "$KEY" "$ENV_SH" 2>/dev/null; then
+        sed -i '' 's|export '"$KEY"'=.*|export '"$KEY"'="'"$VAL"'"|' "$ENV_SH"
+    else
+        echo 'export '"$KEY"'="'"$VAL"'"' >> "$ENV_SH"
+    fi
+done
 
 echo "OK: $OUT ($OUT_SZ bytes)"

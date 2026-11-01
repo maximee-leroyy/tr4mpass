@@ -106,8 +106,16 @@ if [ -n "$BOOTARGS" ]; then
 fi
 
 if [ "$DO_BOOT" -eq 1 ]; then
-    run "bootx"
-    step "bootx sent -- watch the device screen"
+    step "bootx"
+    # send bootx, then keep draining stdout: pongo prints the preboot
+    # hook / KPF patchset / mount messages as it boots; the USB
+    # interface dies once xnu takes over (0xe00002c0 -- expected).
+    "$UPLOADER" cmdq "bootx" 2>&1 | tee -a "$LOG" || true
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        "$UPLOADER" drain 2>>"$LOG" | tee -a "$LOG" >/dev/null 2>&1 || true
+        sleep 1
+    done
+    step "bootx sent -- console captured above; watch the device screen"
 else
     step "--no-boot: shell left alive, ramdisk loaded"
 fi
