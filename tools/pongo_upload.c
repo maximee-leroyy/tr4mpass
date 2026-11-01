@@ -305,30 +305,117 @@ static int run_cmd(const char *cmd)
 	size_t len = strlen(cmd) + 1; /* include the NUL? no: \n */
 	char *buf = malloc(len + 1);
 	snprintf(buf, len + 1, "%s\n", cmd);
+	/* plain 0x21/3 -- exactly what pongoterm sends. Do NOT use the
+	 * 0x21/4 wValue=0 "stall next stdin" flow: if a long command
+	 * (modload) is still running, the write stalls on-device and a
+	 * host-side timeout CANCELS a half-accepted EP0 transfer --
+	 * desyncs pongo's control state machine and panics its USB core
+	 * ("usb bug send 4", 0x73656e642034, seen twice in E32). The
+	 * safe client polls 0xA1/2 (command_in_progress) and only
+	 * writes when idle -- see cmdq(). */
 	return ctrl(0x21, 3, 0, 0, buf, (uint16_t)strlen(buf));
 }
 
 /* read buffered shell stdout: 0xA1/1, wLength 512 (usbloader.c
- * ep0_device_request, IN branch). */
+ * ep0_device_request, IN branch). Fills qbuf, sets last_query_len. */
+static uint8_t qbuf[4096];
+static long last_query_len;
 static int query(void)
 {
-	uint8_t buf[512];
 	IOUSBDevRequest request = {
 		.bmRequestType = 0xA1,
 		.bRequest = 1,
 		.wValue = 0,
 		.wIndex = 0,
-		.wLength = sizeof(buf),
-		.pData = buf,
+		.wLength = sizeof(qbuf),
+		.pData = qbuf,
 	};
 	IOReturn r = (*g_ifc)->ControlRequest(g_ifc, 0, &request);
 	if (r != KERN_SUCCESS) {
 		fprintf(stderr, "query: 0x%x\n", r);
 		return 1;
 	}
-	if (request.wLenDone)
-		fwrite(buf, 1, request.wLenDone, stdout);
+	last_query_len = request.wLenDone;
+	if (last_query_len)
+		fwrite(qbuf, 1, last_query_len, stdout);
 	return 0;
+}
+
+/* async command completion status: 0xA1/2, wLength 1 -- returns
+ * command_in_progress (0 = idle). Official client flow (usbloader.c);
+ * NEVER write stdin while this is nonzero. */
+static int cmd_status(void)
+{
+	uint8_t st = 0xff;
+	IOUSBDevRequest request = {
+		.bmRequestType = 0xA1,
+		.bRequest = 2,
+		.wValue = 0,
+		.wIndex = 0,
+		.wLength = 1,
+		.pData = &st,
+	};
+	IOReturn r = (*g_ifc)->ControlRequest(g_ifc, 0, &request);
+	if (r != KERN_SUCCESS)
+		return -1;
+	return st;
+}
+
+/* cmdq <cmd> [expect] -- the only way the loader script talks to the
+ * shell. Official client flow (usbloader.c + pongoterm):
+ *   1. poll 0xA1/2 (async completion status, 1 byte) until idle --
+ *      NEVER write stdin while a command is in progress (E32: that is
+ *      what panicked pongo's USB core twice: once from retry-hammering
+ *      a busy shell, once from the 0x21/4 wValue=0 stall + 5s host
+ *      timeout cancelling a half-accepted EP0 transfer).
+ *   2. drain stale buffered stdout (0xA1/1).
+ *   3. plain 0x21/3 (what pongoterm sends; no stall dance).
+ *   4. stream stdout + poll status until <expect> appears (rc 0) or
+ *      the command completes without it (rc 2). */
+static int cmdq(const char *cmd, const char *expect)
+{
+	int st, waited = 0;
+	while ((st = cmd_status()) > 0 && waited < 90000) {
+		usleep(300000);
+		waited += 300;
+		query(); /* stream output of the running command */
+	}
+	if (st > 0) {
+		fprintf(stderr, "shell busy >90s, refusing to write\n");
+		return 1;
+	}
+	while (query() == 0 && last_query_len > 0)
+		; /* drain stale buffered stdout */
+	if (run_cmd(cmd))
+		return 1;
+
+	static char acc[16384];
+	size_t accn = 0;
+	waited = 0;
+	while (waited < 20000) {
+		usleep(300000);
+		waited += 300;
+		if (query() == 0 && last_query_len > 0 &&
+		    accn + (size_t)last_query_len < sizeof(acc)) {
+			memcpy(acc + accn, qbuf,
+			       (size_t)last_query_len);
+			accn += (size_t)last_query_len;
+		}
+		if (expect) {
+			size_t el = strlen(expect);
+			if (accn >= el &&
+			    memmem(acc, accn, expect, el)) {
+				fwrite(acc, 1, accn, stdout);
+				return 0;
+			}
+		}
+		st = cmd_status();
+		if (st == 0 && last_query_len == 0)
+			break; /* done, output quiet */
+	}
+	if (accn)
+		fwrite(acc, 1, accn, stdout);
+	return expect ? 2 : 0;
 }
 
 int main(int argc, char **argv)
@@ -358,8 +445,8 @@ int main(int argc, char **argv)
 		rc = pad(atoi(argv[2]));
 	} else if (!strcmp(argv[1], "query") && argc == 2) {
 		rc = query();
-	} else if (!strcmp(argv[1], "cmdq") && argc == 3) {
-		rc = run_cmd(argv[2]) || (usleep(300000), query());
+	} else if (!strcmp(argv[1], "cmdq") && (argc == 3 || argc == 4)) {
+		rc = cmdq(argv[2], argc == 4 ? argv[3] : NULL);
 	} else {
 		fprintf(stderr, "bad args\n");
 		rc = 2;

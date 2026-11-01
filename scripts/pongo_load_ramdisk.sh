@@ -56,11 +56,26 @@ fi
 LOG="$(log_dir)/pongo-load-$(date +%Y%m%d-%H%M%S).log"
 step() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 
-# cmdq: send a command and capture its response deterministically
-# (query reads shell stdout via 0xA1/1 -- no pongoterm guessing).
+# cmdq: send a command ONLY when the shell is idle (0xA1/2 status
+# poll -- official client flow), then stream its stdout until the
+# expect substring appears. Resending while busy is what panicked
+# pongo's USB core twice (E32); the tool refuses to do it.
 run() {
     step "cmd: $1"
     "$UPLOADER" cmdq "$1" 2>&1 | tee -a "$LOG" || fail "cmd '$1' failed"
+}
+
+run_confirmed() {
+    step "cmd (confirmed): $1"
+    local i resp
+    for i in 1 2 3; do
+        resp="$("$UPLOADER" cmdq "$1" "$2" 2>&1 | tr -d '\r')"
+        echo "$resp" | tee -a "$LOG"
+        case "$resp" in
+            *"$2"*) step "confirmed: '$2' seen"; return 0 ;;
+        esac
+    done
+    fail "'$1' never confirmed '$2'"
 }
 
 step "upload ramdisk ($RAMDISK_SZ bytes)"
@@ -78,7 +93,7 @@ if [ -n "$KPF" ]; then
 fi
 
 if [ -n "$BOOTARGS" ]; then
-    run "xargs $BOOTARGS"
+    run_confirmed "xargs $BOOTARGS" "set xnu boot arg cmdline"
 fi
 
 if [ "$DO_BOOT" -eq 1 ]; then
