@@ -669,6 +669,58 @@ que l'interface dès le départ.
 | **E19** | **✅** | P5=H1 + portage P3 + orchestration gaster-exact (IOKit dès stage 1, reset ×3 + final, verify IOKit) | **PWND:[checkm8]** — câble direct, sans hub, sans replug ; attempt 3 `sent=0`/pad 1280 (artefacts) mais STALL corrects partout ; device resté en DFU pwned | E20 |
 | **E20** | **?** | préparation étape [3/8] : `scripts/{ipsw_pull.py,detect_ios.sh,ramdisk_test_ibss.sh}` + découverte SRTG=BootROM (≠ iOS) | outils testés — **run iBSS en attente** | run transition DFU→recovery |
 
+### E20bis — Analyse palera1n v3.0.0-beta.3 (clone /tmp/palera1n-check)
+
+**Pourquoi le clone** : vérifier si palera1n contient des images
+prêtes (iBSS/iBEC/ramdisk/pongo) réutilisables. **Réponse : NON** —
+`Pongo.bin` et `ramdisk.dmg` sont des **artefacts CI**
+(`.github/workflows/build.yml`, jobs `build-pongo`/`build-ramdisk`),
+pas dans le repo. Mais la lecture du source révèle un **choix
+d'architecture différent du nôtre**, avec un impact direct sur le
+risque USB M-series.
+
+**Architecture palera1n = pongoOS-as-payload (1 seule reconnexion)** :
+
+1. checkm8 classique (libopenra1n, 1stparty/, MIT) jusqu'au patch ;
+2. le payload du stage 4 n'est PAS un petit shellcode : c'est
+   **pongoOS** compressé LZ4, encapsulé par `generate_stage1`
+   (stage1.c) avec `lz4dec.bin` (500 o) comme décompresseur ;
+3. l'overwrite déclenche : lz4dec → pongoOS → le device re-énumère
+   **PID 0x4141 (pongoOS)** — pas de mode recovery 0x1281, pas d'iBSS,
+   pas d'iBEC, pas de devicetree IPSW ;
+4. TOUT le reste (kpf, ramdisk, boot, shell) passe par le shell
+   pongoOS sur USB (`pongo_helper.c`, 295 lignes : commandes + upload
+   de fichiers + `bootx` depuis pongo).
+
+**Pour l'A9 (0x8000)** : `yolo_s8000.bin` (2780 o, YoloDFU stage-1
+loader) est EMBARQUÉ dans le repo ; `generate_stage1` prend le chemin
+**non-wnx** pour A9 (A9X/A10/A10X/A11/T2 sont wnx — pas nous) →
+presize 0xc0, plus simple. Compatible avec notre CPID.
+
+**Détail important** : palera1n **REFUSE les devices pwned DFU**
+(exploit.c L381-387 « Detected pwned DFU mode device, please enter
+normal DFU mode ») — son flux fait pwn+pongo en un seul passage.
+Notre flux en 2 étapes (pwn puis post-exploit séparé) reste valable
+mais doit piloter pongoOS après notre propre pwn.
+
+**Comparaison des deux routes pour path_a** :
+
+| | Route IPSW (notre path_a actuel) | Route pongoOS (palera1n) |
+|---|---|---|
+| reconnexions USB | **3** (DFU→recovery→iBEC→recovery) | **1** (DFU→pongoOS) |
+| risque M-series USB-C | élevé (zone documentée palera1n) | minimal (même mécanique que le pwn) |
+| images nécessaires | iBSS+iBEC+devicetree+ramdisk+trustcache (IPSW + pré-traitement) | Pongo.bin (CI artifact, à obtenir/construire) + ramdisk custom |
+| code à écrire | 0 (path_a_ramdisk.c complet déjà écrit) | client pongoOS (~300 lignes, modèle pongo_helper.c) + stage1 dans checkm8_patch |
+| ramdisk | extrait IPSW + patches kernel + remplacement mobileactivationd | ramdisk custom palera1n (contient déjà ce qu'il faut, adapter à notre but) |
+
+**Stratégie retenue** : le test A (iBSS) reste la **mesure
+discriminante** — si la transition DFU→recovery passe sans replug, la
+route IPSW (déjà écrite) est la plus courte. Si elle échoue, pivot
+route pongoOS (une seule transition, la même qui marche déjà en E19).
+Le test A coûte 2 minutes et décide.
+
+| **E20bis** | **ℹ️** | analyse palera1n v3.0.0-beta.3 : route pongoOS (1 reconnexion) vs route IPSW (3 reconnexions) ; yolo_s8000.bin embarqué ; Pongo.bin/ramdisk.dmg = artefacts CI | décision repoussée au résultat du test A | run iBSS |
+
 ### Règles M-series validées empiriquement (l'état de l'art actuel)
 
 1. Spray : transport **async + abort en flight** (1 ms), jamais synchrone ;
