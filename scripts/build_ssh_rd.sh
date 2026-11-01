@@ -122,7 +122,13 @@ printf 'tr4mpass ssh ramdisk\nmount rootfs rw: /usr/bin/mount_filesystems (disk0
 # kit + mount tooling must remain.
 info "SLIMMING: remove restore-only content"
 rm -rf "$R/usr/standalone"                       # periph firmware, 27MB
-rm -rf "$R/System/Library/PrivateFrameworks"     # not linked by kit
+# E48 lesson: mount_apfs + mount link PrivateFrameworks/APFS.framework
+# and PrivateFrameworks/MediaKit.framework -- without them the rootfs
+# cannot be mounted rw over SSH (the whole point of the ramdisk).
+# Keep ONLY these two PrivateFrameworks, delete the rest.
+find "$R/System/Library/PrivateFrameworks" -maxdepth 1 -mindepth 1 \
+    ! -name 'APFS.framework' ! -name 'MediaKit.framework' \
+    -exec rm -rf {} + 2>/dev/null || true
 rm -rf "$R/System/Library/Extensions"            # disk kernel has own
 for fw in CFNetwork CoreServices Foundation MobileCoreServices \
          Security SystemConfiguration IOSurface; do
