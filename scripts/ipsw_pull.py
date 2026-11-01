@@ -12,6 +12,7 @@ Usage:
   ipsw_pull.py fetch  <ipsw-url> <entry-regex> <outdir>
 """
 import json
+import os
 import re
 import struct
 import sys
@@ -71,21 +72,30 @@ def read_central_directory(url, total=None):
     while i + 46 <= len(cd) and cd[i:i + 4] == b"PK\x01\x02":
         method = struct.unpack("<H", cd[i + 10:i + 12])[0]
         comp_size = struct.unpack("<I", cd[i + 20:i + 24])[0]
+        uncomp_size = struct.unpack("<I", cd[i + 24:i + 28])[0]
         name_len = struct.unpack("<H", cd[i + 28:i + 30])[0]
         extra_len = struct.unpack("<H", cd[i + 30:i + 32])[0]
         cmt_len = struct.unpack("<H", cd[i + 32:i + 34])[0]
         local_off = struct.unpack("<I", cd[i + 42:i + 46])[0]
         name = cd[i + 46:i + 46 + name_len].decode("utf-8", "replace")
 
-        if comp_size == 0xFFFFFFFF or local_off == 0xFFFFFFFF:
-            # zip64 extra field: values appear in order for the fields
-            # that were saturated.
+        if 0xFFFFFFFF in (uncomp_size, comp_size, local_off):
+            # zip64 extra field (id 0x0001): the 64-bit values appear in
+            # CANONICAL order -- uncompressed size, compressed size,
+            # header offset -- but ONLY for the plain fields that were
+            # saturated.  Apple IPSWs saturate all of them even when the
+            # value fits in 32 bits, so we must count quads in order.
+            # (2026-11-01: previous code assumed only csize+offset could
+            # be saturated and mis-assigned fields on 19H422.)
             ex = cd[i + 46 + name_len:i + 46 + name_len + extra_len]
             j = 0
             while j + 4 <= len(ex):
                 hid, hsz = struct.unpack("<HH", ex[j:j + 4])
                 if hid == 0x0001:
                     k = j + 4
+                    if uncomp_size == 0xFFFFFFFF and k + 8 <= j + 4 + hsz:
+                        uncomp_size = struct.unpack("<Q", ex[k:k + 8])[0]
+                        k += 8
                     if comp_size == 0xFFFFFFFF and k + 8 <= j + 4 + hsz:
                         comp_size = struct.unpack("<Q", ex[k:k + 8])[0]
                         k += 8
@@ -167,8 +177,14 @@ def main():
     if cmd == "probe":
         needle = sys.argv[4].encode()
         needle_l = needle.lower()
+        # Rule: state under the tr4mpass state dir, never /tmp.
+        probe_dir = os.path.join(
+            os.environ.get("TR4MPASS_STATE_DIR",
+                           os.path.expanduser("~/.cache/tr4mpass")),
+            "images")
+        os.makedirs(probe_dir, exist_ok=True)
         for e in matches:
-            path, size = extract(url, e, "/tmp")
+            path, size = extract(url, e, probe_dir)
             blob = open(path, "rb").read()
             hit = needle_l in blob.lower()
             print("%-45s %7d bytes  needle=%s" % (e[0].rsplit("/", 1)[-1], size,

@@ -1573,3 +1573,206 @@ palera1n, ou gestion IOKit custom dans path_a_ramdisk).
 M-series » (checkra1n/pongoOS) et « notre chemin qui wedge » est le **user
 client IOKit utilisé** : interface (ControlRequest, sans timeout) vs device
 (DeviceRequestTO, TO). C'est l'objet de l'expérimentation E9.
+
+---
+
+## 13. E20 → E23 — Modèle réel du device, no-boot iBSS, et canal exec
+
+### E20 — Le device n'est PAS un iPhone 6s
+
+- Serial DFU : `CPID:8000 BDID:02` → table libirecovery L195-196 :
+  `{ "iPhone8,4", "n69uap", 0x02, 0x8000, "iPhone SE (1st gen)" }`.
+  Le « iPhone 6s » de la doc de recherche était faux (n71 = BDID 0x04).
+- Vérifié live après boot iOS : `ideviceinfo` → ProductType **iPhone8,4**,
+  HardwareModel **N69uAP**, **iOS 14.6 / build 18F72**.
+- Conséquence : les images n71 précédemment fetchées étaient du mauvais
+  board → explique le no-boot silencieux #1. Images re-fetchées pour
+  18F72 (iBSS/iBEC/DeviceTree n69u + ramdisk 018-18125-090.dmg Erase
+  + trustcache), env.sh réécrit. Artifacts n71 supprimés.
+
+### E21 — `irecovery -f` ne boote PAS un payload sur DFU pwned gaster
+
+- iBSS.n69u (mauvais board d'abord, puis bon board) uploadé à 100 %,
+  rc=0, 3 fois. Aucune transition DFU→recovery.
+- Vérifié dans libirecovery.c (source upstream) : `-f` = DNLOAD 0x800
+  chunks → ZLP (wValue=packets) → 2× GETSTATUS → `irecv_reset`.
+  C'est la séquence **stock DFU** ; sur le runtime pwned gaster, le
+  hook `dfu_handle_request` n'interprète pas cette danse comme un
+  ordre de boot (pas de suffix 16 octets, mauvaise marche d'états).
+
+### E22 — Séquence de boot correcte = celle de gaster (dfu_boot)
+
+Outil `tools/dfu_boot.c` reproduisant gaster `dfu_send_data` +
+`dfu_set_state_wait_reset` : DNLOAD chunks 0x800 → suffix 16 zéros →
+ZLP → GETSTATUS ×3 (états 6→7→8, observés **exactement**) →
+`irecv_reset`. La marche d'états réussit (le hook DFU tourne) mais le
+device re-rentre en pwned DFU au reset : **l'image uploadée n'a jamais
+été exécutée**. Deux causes identifiées ensuite (E23) :
+
+1. Le trigger `0x21/4` de libopenra1n (palera1n) est un hook de
+   **leur** payload, pas de gaster — envoyé, ignoré (r=-0, no-op).
+2. L'image envoyée était le .im4p **chiffré GID** : même si le hook
+   l'avait copié et sauté dessus, c'est du garbage chiffré. Le SRTG
+   iBoot-2234.0.0.3.3 réapparaît au reset = payload intact qui
+   ré-arme pwned DFU (comportement normal).
+
+### E23 — Canal exec : transport OK, résultat toujours vide
+
+- `decrypt_kbag` de gaster AUTHENTIQUE (compilé depuis master
+  0x7ff/gaster, payloads byte-identiques aux nôtres — vérifié par
+  extraction/comparaison des deux binaires embarqués) échoue pareil :
+  GET 0xA1/2 wValue=0xFFFF → timeout (libirecovery `-11`) ou
+  `0xe0004051` (notre transport E9 IOKit interface).
+- Séquence exacte de gaster reproduite (DNLOAD data → suffix 16 → ZLP
+  → états 6→7→8 → GET sur le MÊME handle, PAS de reset) : identique.
+- GETSTATUS/plain GET 0xA1/2 wValue=0 : timeout aussi — or le hook
+  `_request_done` répond à TOUT 0xA1/2 (pass-through 0x80 octets).
+  ⇒ Symptôme : la branche `handle_interface_request` ne s'exécute
+  JAMAIS, ou `insecure_memory_base` ne contient pas ce qu'on croit.
+- Piste principale : notre E19 a installé le payload avec la recette
+  stage-4 modifiée (overwrite 0x02/0x03+48B, resets intermédiaires ×3).
+  Le hook DFU (chaîne `dfu_handle_request` → `_main` →
+  `handle_interface_request`) fonctionne pour les requêtes DFU
+  standard, mais si le **tail** du handler (exec_magic, done_magic,
+  insecure_memory_base) est corrompu ou pointe ailleurs, la branche
+  exec (0x2A1 / 0xFFFF) ne matche jamais → timeout. À noter : la
+  lecture PWND: fonctionne (string descriptor), la marche d'états
+  aussi — tout ce qui passe par le début du hook marche ; tout ce qui
+  dépend du tail ne répond pas.
+- Test discriminant programmé (E24) : DFU vierge → `gaster pwn`
+  STOCK (aucune modification) → `decrypt_kbag` immédiatement. Si OK,
+  notre recette stage-4 est en cause (revenir à l'overwrite gaster
+  0x00/0x00 exact, sans resets intermédiaires supplémentaires) ;
+  si KO, le problème est transport/plateforme (IOUSBHost = plan B).
+
+### Journal
+
+| ID | Type | Constat | Décision/impact | Prochaine action |
+|---|---|---|---|---|
+| **E20** | **🛑** | device = iPhone8,4/n69u (BDID 0x02 + CPID 0x8000), PAS 6s/n71 ; iOS réel 14.6/18F72 | images n71 jetées, re-fetch 18F72 correct | boot gate avec iBSS.n69u déchiffré |
+| **E21** | **🛑** | `irecovery -f` (séquence stock) ne boote rien sur pwned DFU gaster (3 uploads 100 %, 0 transition) | outil dédié dfu_boot requis | sursédé |
+| **E22** | **🛑** | séquence gaster exacte (suffix+états 6→7→8+reset) : états OK, image jamais exécutée ; trigger 0x21/4 = hook palera1n, no-op sur gaster | cause = image chiffrée + exécution jamais déclenchée | déchiffrement GID requis |
+| **E23** | **🛑** | canal exec muet y compris avec gaster stock sur le pwn existant ; pass-through GET 0xA1/2 wValue=0 timeout aussi | hook DFU partiellement fonctionnel, branche exec/tail suspectée corrompue par notre recette stage-4 E19 | E24 : pwn stock → decrypt_kbag → boot |
+
+### E24 — Discriminante gaster stock : NOTRE recette E19 corrompait le canal exec
+
+Protocole : DFU vierge → `gaster pwn` STOCK (aucune modif) →
+`decrypt_kbag` → `decrypt iBSS`.
+
+| Étape | Résultat |
+|---|---|
+| gaster pwn stock (4 stages) | ✅ tous `ret: true` |
+| `decrypt_kbag` (kbag 18F72 extrait du iBSS) | ✅ **IV/key déchiffrées retournées** |
+| `decrypt iBSS.n69u` | ✅ binaire 239 296 o, ARM64 valide (mov x16/x17…) |
+
+⇒ Le transport, le device et le protocole exec sont bons. C'était la
+recette stage-4 modifiée de E19 (overwrite 0x02/0x03, resets ×3) qui
+corrompait le **tail** du handler (`exec_magic`/`insecure_memory_base`)
+— tout ce qui passe par le début du hook marchait (PWND:, états DFU),
+tout ce qui dépend du tail ne répondait jamais (canal exec muet).
+
+### E25 — boot-on-reset est DÉSACTIVÉ par design dans le payload gaster
+
+`payload_A9.S::_main` ligne 2 : `str xzr, [dfu_handle_bus_reset]` —
+gaster met à NULL le callback de bus-reset du ROM **exprès** : c'est
+pour ça que PWND: survit aux resets… et c'est pour ça qu'AUCUNE
+séquence « DNLOAD puis reset » ne peut booter une image après un pwn
+gaster (l'image était peut-être copiée en mémoire, mais le chemin de
+boot du ROM est mort). Les uploads E21/E22 n'ont donc jamais pu
+booter, images déchiffrées ou non. La séquence `0x21/4` de
+libopenra1n est un hook de LEUR payload (yolo), pas de gaster.
+
+Le boot après pwn-gaster passe par un **stage2** : un deuxième payload
+qui ré-énumère son propre device DFU avec un boot-on-reset vivant
+(ra1npoc `common.c::payload_stage2` + `connect_to_stage2` :
+DNLOAD → ZLP → 3×GETSTATUS → l'image boote, pas de hack de reset).
+
+### E26 — ROUTE PONGOOS PROUVÉE sur M4 USB-C (fin du test A)
+
+`ra1npoc` (kok3shidoll, payloads checkra1n dumpés v0.12.4, licence
+MIT) compilé pour macOS (clang + IOKit), lancé sur DFU VIERGE :
+
+```
+checkm8_arm64: set_global_state OK, heap_occupation OK, checkmate!
+sending stage2 payload → connecting to stage2 → **connected to Stage2**
+sending pongoOS → BOOTED? rc=0
+```
+
+Puis le device a **booté iOS normalement** (pongoOS auto-boot du
+kernel par défaut : le flag NO_AUTOBOOT n'est posé que pour S8001).
+Vérifié : `ideviceinfo` → iPhone8,4, 14.6, Unactivated. Toutes les
+transitions USB ont survécu (DFU→stage2→pongoOS→iOS).
+
+**Conséquences** :
+1. Le test A (iBSS route) est sans objet : la route pongoOS (E20bis
+   « option pongo », 1 transition) est PROUVÉE sur cette machine.
+2. Le pwn via notre code C E19 reste utile (skip-if-pwned) mais le
+   boot passe par le loader ra1npoc (ou un port de sa logique stage2).
+3. Prochaine étape : garder pongoOS vivant — patcher le cas S8000 de
+   ra1npoc pour poser `NO_AUTOBOOT` (comme S8001), puis `pongoterm`
+   pour charger KPF/ramdisk custom et `bootx` (étapes [4/8]→[5/8]).
+
+| ID | Type | Constat | Décision/impact | Prochaine action |
+|---|---|---|---|---|
+| **E24** | **✅** | gaster stock : pwn + decrypt_kbag + decrypt iBSS OK sur M4 | notre recette stage-4 E19 était en cause (tail corrompu) | réaligner stage-4 sur gaster stock si on re-pwn nous-mêmes |
+| **E25** | **ℹ️** | payload gaster neutralise boot-on-reset (payload_A9.S) ; boot = via stage2 | explication définitive des no-boot E21/E22 | — |
+| **E26** | **✅✅** | ra1npoc s8000 : exploit → stage2 → pongoOS → boot iOS complet sur M4 USB-C | ROUTE PONGOOS retenue ; test A obsolète | NO_AUTOBOOT + pongoterm |
+
+### E27 — s8000 full blob : pongoOS tourne mais auto-boote le kernel
+
+Test avec le kerninfo `pongo_shell` posé (KPF_FLAGS_PTR=0x158018,
+`checkrain_option_pongo_shell`) : ra1npoc s8000 → stage2 connecté →
+pongoOS envoyé → **l'écran du device affiche les messages de patching
+KPF** (confirmation visuelle utilisateur) puis « recfg done /
+rebooting » → device parti en recovery (PID 0x12A8, serial=UDID).
+
+Constats :
+1. **pongoOS vit** : « patched » à l'écran = xnu_hook/KPF en action.
+   Le shell pongo a booté et travaillé — c'est un checkra1n pongoOS
+   patché, pas le mainline (qui n'a PAS d'autoboot : `while(!gBootFlag)`
+   attends indéfiniment, entry.c L210).
+2. Le flag `pongo_shell` du blob n'a PAS arrêté l'autoboot : le stage2
+   checkra1n s8000 construit le bloc autoboot (magic `autoboot` placé
+   à 0x418e00000, mm.c L802) indépendamment des kerninfo du blob.
+3. La voie s8001 de ra1npoc (main.c L386-392) est la solution prouvée
+   dans le code même : `payload.pongoOS_len = 0x3F2F8` (exactement
+   pongoOS.bin, 258 808 o) + `NO_AUTOBOOT` → pas de KPF/RDSK dans
+   l'image → shell pongoOS vivant, piloté ensuite par pongoterm
+   (rdsk → « ramdisk » → kpf → « modload » → « xargs » → « bootx »).
+4. E28 = s8000 avec la recette s8001. Si le shell reste vivant, la
+   fenêtre d'interaction est illimitée (pongoOS n'a pas de timeout).
+
+| ID | Type | Constat | Décision/impact | Prochaine action |
+|---|---|---|---|---|
+| **E27** | **ℹ️** | pongoOS s8000 vit (KPF « patched » à l'écran) mais stage2 auto-boote malgré pongo_shell | fenêtre trop courte via blob complet ; recette s8001 = shell vivant | E28 : truncate 0x3F2F8 + pongoterm interactif |
+
+### E28 — SHELL PONGOOS VIVANT ET PILOTABLE (s8000, recette s8001)
+
+ra1npoc patché (s8000 : `pongoOS_len = 0x3F2F8` + NO_AUTOBOOT, cf.
+E27) sur DFU vierge :
+
+```
+checkmate! → stage2 connecté → pongoOS envoyé → BOOTED? rc=0
+USB : serial "pongoOS / checkra1n 2.5.1-9234e72f", PID 0x4141
+```
+
+pongoterm (IOKit, hotplug PID 0x4141) : **[Connected]**, prompt
+`pongoOS>` actif. Commandes exécutées avec succès :
+- `help` → set complet : `ramdisk`, `modload`, `xargs`, `bootx`,
+  `bootux`, `loadx`, `sep`, `dt`, `spawn`...
+- `xargs` → « xnu boot arg cmdline: [] »
+- `lsdev` → arbre des devices (system-vol, data-vol, baseband-vol...)
+
+La fenêtre d'interaction est **illimitée** (pas de timeout, pas
+d'autoboot sans bloc `autoboot`). Terminer sans bootx = le device
+reste dans pongoOS ; Power+Home pour ressortir.
+
+**Pipeline activé** : étape [4/8] (environnement d'exécution) =
+pongoOS shell. Les étapes ramdisk (`ramdisk` cmd + upload bulk 0x21/1
+wValue=taille puis bulk EP2, cf. pongoterm ra1npoc-mode) sont
+accessibles sans replug. Le KPF sera chargé via `modload` (upload
+séparé), pas incrusté dans le blob.
+
+| ID | Type | Constat | Décision/impact | Prochaine action |
+|---|---|---|---|---|
+| **E28** | **✅✅** | pongoOS shell vivant + interactif illimité (xargs/lsdev OK) | étape [4/8] PROUVÉE sur M4 USB-C | upload ramdisk 18F72 + KPF + bootx ; intégrer ra1npoc/pongoterm au repo |
