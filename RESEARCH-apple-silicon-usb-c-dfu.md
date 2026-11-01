@@ -1776,3 +1776,36 @@ séparé), pas incrusté dans le blob.
 | ID | Type | Constat | Décision/impact | Prochaine action |
 |---|---|---|---|---|
 | **E28** | **✅✅** | pongoOS shell vivant + interactif illimité (xargs/lsdev OK) | étape [4/8] PROUVÉE sur M4 USB-C | upload ramdisk 18F72 + KPF + bootx ; intégrer ra1npoc/pongoterm au repo |
+
+### E29 — UPLOAD 105 Mo DANS LE SHELL PONGO (ramdisk 18F72 en mémoire)
+
+| ID | Type | Constat | Décision/impact | Prochaine action |
+|---|---|---|---|---|
+| **E29** | **✅✅** | Ramdisk Erase 018-18125-090.dmg (105 367 579 octets) uploadé dans `loader_xfer_recv_data` via `tools/pongo_upload`, puis consommé par la commande `ramdisk` (réponse propre, pas d'erreur) | étape [4/8] ramdisk EN MÉMOIRE — il reste bootx | bootx (iOS doit démarrer avec le ramdisk) |
+
+Détails techniques (tous vérifiés live, device en shell 2.5.1 PID 0x4141) :
+
+1. **Transport contrôle = interface user client** (`IOUSBInterfaceInterface245`,
+   `ControlRequest` pipe 0), pas le device client. Le device client stall sur les
+   requêtes 0x21 (E9 redécouvert). Le `cmd` fonctionne : `0x21/3 "<cmd>\n"`.
+2. **Init d'upload** : `0x21/1 wLength=4` avec la taille en data-out
+   (`reallocate_loader_xfer_data` : round-up 512, ≤128 Mo, prime le DMA EP2 OUT).
+   `wLength=0` = variante 1 Mo fixe (usbloader.c:107).
+3. **Stall 0xe000404f (kIOUSBPipeStalled)** : toute requête 0x21/1 stall si
+   `usbloader_is_waiting_xfer==1` (DMA EP2 en attente). Récupération prouvée :
+   `drain` = écrire 1 Mo de junk sur pipe 2 → DMA complété → shell de nouveau OK.
+4. **Gros upload M4** : WritePipe 16 KiB atteint 99 % (104 873 984) puis bloque ;
+   un drain depuis une NOUVELLE connexion complète le DMA exactement
+   (104 873 984 + 493 624 = 105 367 608 = taille round-up). Fix robuste :
+   `WritePipeTO` (5 s) + `ClearPipeStallBothEnds` + réouverture interface ;
+   le run complet passe alors sans accroc.
+5. **Padding** : la taille DMA est round-up 512 ; pad = 512 − (sz mod 512) ;
+   105 367 579 → pad 485 (ma première arithmétique « 29 » était fausse).
+   Upload auto-padé ; commandes `pad <n>` / `query` (lecture stdout 0xA1/1
+   wLength=512) / `cmdq` (cmd + réponse déterministe) ajoutées.
+6. **Diagnostic `ramdisk`** : « please upload a ramdisk » = compteur
+   `loader_xfer_recv_count==0` (buffer déjà consommé ou upload non complété),
+   PAS une panne du shell. Second appel après consommation → message attendu.
+
+Outils : `tools/pongo_upload` (upload|cmd|cmdq|query|drain|pad).
+Script : `scripts/pongo_load_ramdisk.sh` (cmdq déterministe).

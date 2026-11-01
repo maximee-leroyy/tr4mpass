@@ -56,28 +56,33 @@ fi
 LOG="$(log_dir)/pongo-load-$(date +%Y%m%d-%H%M%S).log"
 step() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 
-step "upload ramdisk ($RAMDISK_SZ bytes)"
-"$UPLOADER" upload "$TR4MPASS_RAMDISK_PATH" 2>&1 | tee -a "$LOG" || fail "ramdisk upload failed"
+# cmdq: send a command and capture its response deterministically
+# (query reads shell stdout via 0xA1/1 -- no pongoterm guessing).
+run() {
+    step "cmd: $1"
+    "$UPLOADER" cmdq "$1" 2>&1 | tee -a "$LOG" || fail "cmd '$1' failed"
+}
 
-step "cmd: ramdisk"
-"$UPLOADER" cmd "ramdisk" 2>&1 | tee -a "$LOG" || fail "ramdisk cmd failed"
+step "upload ramdisk ($RAMDISK bytes)"
+"$UPLOADER" upload "$TR4MPASS_RAMDISK_PATH" 2>&1 | tee -a "$LOG" \
+    || fail "ramdisk upload failed"
+
+run "ramdisk"
 
 if [ -n "$KPF" ]; then
     require_file "kpf" "$KPF"
     step "upload kpf"
-    "$UPLOADER" upload "$KPF" 2>&1 | tee -a "$LOG" || fail "kpf upload failed"
-    step "cmd: modload"
-    "$UPLOADER" cmd "modload" 2>&1 | tee -a "$LOG" || fail "modload failed"
+    "$UPLOADER" upload "$KPF" 2>&1 | tee -a "$LOG" \
+        || fail "kpf upload failed"
+    run "modload"
 fi
 
 if [ -n "$BOOTARGS" ]; then
-    step "cmd: xargs $BOOTARGS"
-    "$UPLOADER" cmd "xargs $BOOTARGS" 2>&1 | tee -a "$LOG"
+    run "xargs $BOOTARGS"
 fi
 
 if [ "$DO_BOOT" -eq 1 ]; then
-    step "cmd: bootx"
-    "$UPLOADER" cmd "bootx" 2>&1 | tee -a "$LOG"
+    run "bootx"
     step "bootx sent -- watch the device screen"
 else
     step "--no-boot: shell left alive, ramdisk loaded"
