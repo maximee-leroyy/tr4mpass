@@ -231,6 +231,11 @@ and then diverge completely. Full route comparison, Mermaid diagrams and a
 capability-by-capability table:
 [`COMPARISON-palera1n-vs-tr4mpass.md`](COMPARISON-palera1n-vs-tr4mpass.md).
 
+To take this toolkit's remaining steps from "written" to "executed" —
+ramdisk, kernel patches, activation record, deletescript — follow the
+phased plan with decision gates and scripts:
+[`PLAN-path-a-execution.md`](PLAN-path-a-execution.md).
+
 ---
 
 ## Disclaimer
