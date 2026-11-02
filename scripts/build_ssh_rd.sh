@@ -135,15 +135,24 @@ find "$R/System/Library/PrivateFrameworks" -maxdepth 1 -mindepth 1 \
 # shared cache, not in the stock restore ramdisk. Copy it from the
 # extracted stash (state dir survives build WORK wipes).
 FW_STASH="$(state_dir)/images/fw_stash"
-if [ -d "$FW_STASH/AppleFSCompression.framework" ]; then
+# TR4MPASS_SKIP_AFC=1: build a slim revert-only image without
+# AppleFSCompression (mv/reboot boots don't exec apfs_sealvolume).
+# Keeps the volume at the 44 MiB line the proven KPF uploads need.
+if [ "${TR4MPASS_SKIP_AFC:-0}" = "1" ]; then
+    info "TR4MPASS_SKIP_AFC=1: skipping AppleFSCompression embed"
+elif [ -d "$FW_STASH/AppleFSCompression.framework" ]; then
     cp -Rp "$FW_STASH/AppleFSCompression.framework" \
         "$R/System/Library/PrivateFrameworks/" \
         || fail "AppleFSCompression copy failed"
 else
-    fail "fw_stash missing: extract AppleFSCompression from the device dyld shared cache first (see images/fw_stash/README-tr4mpass.txt)"
+    if [ "${TR4MPASS_SKIP_AFC:-0}" != "1" ]; then
+        fail "fw_stash missing: extract AppleFSCompression from the device dyld shared cache first (see images/fw_stash/README-tr4mpass.txt)"
+    fi
 fi
+if [ "${TR4MPASS_SKIP_AFC:-0}" != "1" ]; then
 [ -e "$R/System/Library/PrivateFrameworks/AppleFSCompression.framework/AppleFSCompression" ] \
     || fail "AppleFSCompression dylib missing after copy"
+fi
 rm -rf "$R/System/Library/Extensions"            # disk kernel has own
 for fw in CFNetwork CoreServices Foundation MobileCoreServices \
          Security SystemConfiguration IOSurface; do
@@ -334,8 +343,10 @@ hdiutil attach -readonly -mountpoint "$MNT" "$WORK/verify.dmg" >/dev/null \
     || { hdiutil detach "$MNT"; fail "kit restored_external missing"; }
 [ -e "$MNT/usr/bin/mount_filesystems" ] \
     || { hdiutil detach "$MNT"; fail "mount_filesystems missing"; }
+if [ "${TR4MPASS_SKIP_AFC:-0}" != "1" ]; then
 [ -e "$MNT/System/Library/PrivateFrameworks/AppleFSCompression.framework/AppleFSCompression" ] \
     || { hdiutil detach "$MNT"; fail "AppleFSCompression framework missing"; }
+fi
 [ -e "$MNT/System/Library/Filesystems/apfs.fs/apfs_sealvolume" ] \
     || { hdiutil detach "$MNT"; fail "apfs_sealvolume missing"; }
 [ -x "$MNT/bin/bash" ] \

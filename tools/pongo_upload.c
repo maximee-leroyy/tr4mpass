@@ -262,13 +262,34 @@ static int upload(const char *path)
 			return 1;
 		if (rc == 2)
 			continue;
-		if (pad && bulk_write(padbuf, pad)) {
-			fprintf(stderr, "pad write stalled -- "
-			        "restart\n");
-			continue;
+		if (pad == 0) {		/* padded file: no pad write at all */
+			printf("uploaded %ld bytes (+0 pad)\n", sz);
+			return 0;
 		}
-		printf("uploaded %ld bytes (+%u pad)\n", sz, pad);
-		return 0;
+		/* E64/E63: the trailing zero-pad write stalls
+		 * deterministically on iOS 14.6 (0xe0004051 on the pad's
+		 * first chunk, every attempt). A full restart re-stalls
+		 * the same way and burns all 3 attempts. Retrying ONLY
+		 * the pad is safe: the pad is zeros and pongoOS sizes
+		 * the xfer by newsz, so duplicate/trailing zero bytes
+		 * beyond newsz are ignored by the device. Retries also
+		 * re-ClearPipeStallBothEnds (via bulk_write stall path). */
+		for (int p = 0; pad && p < 8; p++) {
+			int prc = bulk_write(padbuf, pad);
+			if (prc == 0) {
+				printf("uploaded %ld bytes (+%u pad, "
+				       "%d pad retry(s))\n", sz, pad, p);
+				return 0;
+			}
+			fprintf(stderr, "pad write stalled -- "
+			        "pad-only retry %d/8\n", p + 1);
+			if (prc == 1)
+				return 1;
+			/* prc == 2: zero-filled pad re-send is safe */
+			sleep(1);
+		}
+		fprintf(stderr, "pad retries exhausted -- restart\n");
+		continue;
 	}
 	return 1;
 }
