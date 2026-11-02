@@ -1972,3 +1972,103 @@ Découvertes clés :
    rd.dmg (stock) au lieu de rd_small.dmg (slim) — exactement la
    classe de bug du point 6 d'E32 ; bloc de commentaire dupliqué
    lors de l'édition ; arithmétique $(( )) imbriquée invalide.
+
+### E34–E54 — PÉRIODE INTERMÉDIAIRE (condensé ; détail dans les logs)
+
+| ID | Type | Constat | Décision/impact |
+|---|---|---|---|
+| E34–E50 | ⚠️ | Période d'outillage bypass : étude iPhone-Hacktivation-Toolkit, README conofor lu intégralement, `mobileactivationd_ios13` téléchargé et sha256 vérifié (`2454be8c…`, identique au blob du toolkit `99ed5e11…`), posé sur l'appareil en copie inerte `mobileactivationd_ios13_p24` | aucun binaire patché public pour iOS 14.x n'existe — un port réel doit patcher le binaire stock 14.6 |
+| E51–E53 | ✅ | État « les deux renommés » (`Setup.app` + `mobileactivationd` → `.tr4mpass`) freeboot **OK** ce matin-là (écran : autre greeter, pas Setup.app) | observé une fois, non reproduit à ce jour (cf. E67) |
+| E55–E57 | ⚠️ | Chaîne loader stabilisée ; multiples atterrissages pongo/KPF (logs `e55_*`, `pongo-load-*`) | prépare le débuggage KPF d'E60 |
+| E58 | ❌ | Reconstruction du pipeline a perdu `--kpf` → boot sans KPF silencieux | `--kpf` est opt-in dans `scripts/pongo_load_ramdisk.sh` : toujours vérifier `cmd: modload` ≥ 1 dans les logs pongo après chaque run |
+| #24 | ❌ | Binaire iOS-13 patché à l'emplacement canonique `/usr/libexec/mobileactivationd` → bootloop Apple (~30 s puis reboot) | dyld 14.6 rejette le binaire 13 → launchd respawn éternel ; le loop disparaît quand le volume revient en layout factory |
+
+### E60–E63 — LE WEDGE KPF : ROOT CAUSE COMPLÈTE
+
+| ID | Type | Constat | Décision/impact | Prochaine action |
+|---|---|---|---|---|
+| **E60–E62** | ❌ | Upload KPF : les 5 chunks de données passent, puis la **trailing zero-pad write** (184 B) stall (`WritePipe at 0: 0xe0004051`) 3×/3 ; politique `36deb87` = restart complet → re-stall déterministe | le restart complet est fatal ici ; l'ancien build « recovering » (retry in-place) avait résolu ce même stall : indexé comme la bonne politique | éditer `tools/pongo_upload.c` |
+| **E63** | ❌ | Sur pongo tout frais, première transaction : même stall exactement → hypothèses « ordre des uploads » et « 50 MB d'abord » **falsifiées** | le wedge est la **écriture finale écourtée** elle-même[^note] ; les ClearPipeStallBothEnds/r côté hôte ne le débloquent jamais | padding côté hôte |
+| **pre-E64** | ✅✅ | KPF pré-padé à 16 KiB (`kpf_checkra1n_pad.bin`, 98 304 B) : upload OK `+0 pad`… mais `modload: short read` → **découverte clé** : la complétion pongoOS se signale sur un **chunk OUT final court** ; aligner 16 KiB supprime le terminator | le bon padding = multiple de 1 KiB **PAS** 16 KiB : `kpf_checkra1n_1k.bin` (88 064 B, +440 zéros) ; le chunk court final complète le xfer et les zéros derrière sont ignorés (pongo dimensionne par `newsz`) | artefact canonique pour tous les uploads futurs |
+| **pre-E64** | ⚠️ | Bug d'édition attrapé par le log : avec `pad=0`, la boucle retombait dans « pad retries exhausted » au lieu de succès | ajout du chemin succès early-return `pad==0` dans `tools/pongo_upload.c` | — |
+
+Récapitulatif `tools/pongo_upload.c` (édité, non committé à la date de cette entrée) :
+retry du pad **in-place** jusqu'à 8× (sûr : pad = zéros + xfer dimensionné par `newsz`, le surplus est ignoré — la duplication est donc inoffensive *ici*, à la CONTRAIRE d'un retry mid-fichier — cf. leçon E39/E41), + early success `pad==0`. Warning unique à la build : `ifc_reopen` statique inutilisée (sans impact).
+
+### E64 — RECETTE CANONIQUE + FALSIFICATION DU « PIN SNAPSHOOT »
+
+| ID | Type | Constat | Décision/impact | Prochaine action |
+|---|---|---|---|---|
+| **E64** | ✅✅ | Chaîne complète du premier coup : DFU 0x1227 → ra1npoc → pongo 16705 → KPF-padded-first (`KPF_OK`) → `modload` → ramdisk 50 331 648 B (`RD_OK`) → `xargs rootdev=md0 rd=md0 -v wdt=-1 trm_default=0` → `xfb` → `bootx` → `SHELL_OK` TRY1 | recette déterministe ; **restore factory (Setup.app + mobileactivationd canoniques)** → freeboot écran Setup ✅ → le freeboot lit le **volume LIVE** ; le « pin snapshot » (xid 65) qui cadrait la stratégie devient une impasse obsolète — `apfs_sealvolume` jamais nécessaire (iOS 14.6, pas de SSV) | journal + commit |
+
+Recette canonique des boots à partir d'E64 :
+```
+DFU 0x1227 → ra1npoc → pongo 16705 →
+upload kpf_checkra1n_1k.bin (88 064 B) → cmd modload →
+upload ramdisk_ssh_raw.hfs (50 331 648 B) → cmd ramdisk →
+cmd "xargs rootdev=md0 rd=md0 -v wdt=-1 trm_default=0" → xfb → bootx
+→ iproxy 2223 22 → ssh_expect22 'echo SHELL_OK'
+```
+
+### E65–E67 — MATRICE BOOT « ACTIVATION STACK » (une variable par run)
+
+| ID | État Setup.app | État mobileactivationd | Freeboot | Signature |
+|---|---|---|---|---|
+| E64 | présent | présent (canonique) | ✅ Setup screen | factory |
+| matin E51–E53 | renommé | renommé | ✅ (autre greeter) | observé une fois |
+| #24 | présent | binaire iOS-13 | ❌ | logo ~30 s → reboot (launchd respawn, dyld reject) |
+| **E65** | **présent, intact** | **absent** (mv → `.tr4mpass`, cp `.orig_backup` AVANT) | ❌ | Apple logo ~30 s → reboot, pas de kernel text visible |
+| **E66** | **absent** (mv → `.tr4mpass`) | **présent, original** (restauré d'`.orig_backup`) | ❌ | **signature différente** : Apple logo → écran noir ~1 s → Apple logo | 
+| **E67** | absent | absent (mv → `.ren2`) | ❌ | loop — **contredit E51–E53** : le matin, ce même état avait booté |
+
+Lecture honnête du tableau :
+1. Le stack activation supporte « tout présent » ou « tout absent » — tout état intermédiaire coince, à des profondeurs différentes (E65 meurt au respawn launchd ; E66 meurt plus tard, à la passe greeter).
+2. **E67 est la vraie contradiction** : état disque identique à E51–E53 (tous deux renommés) mais le freeboot loop. ⇒ **la cause du loop depuis E65 n'est plus uniquement les renommés System** : autre chose a dérivé (état Data-volume accumulé par les cycles de crash, montages unclean en série, ou NVRAM/pref) — la théorie « ledger fichiers » est insuffisante seule.
+
+### E68 — RECOVERY FACTORY COMPLÈTE + PREMIÈRE PASS FORENSICS (BLOQUÉE SUR Data)
+
+| ID | Type | Constat | Décision/impact | Prochaine action |
+|---|---|---|---|---|
+| **E68a** | ✅✅ | Restore complet en un DFU : `Setup.app.tr4mpass → Setup.app` + `mobileactivationd.ren2 → mobileactivationd`, `sync=0`, `umount=0`, reboot | état disque = factory (les seuls extras inertes : `.tr4mpass` ×2, `.ios13_p24`, `.ren2`) | freeboot attendu : Setup screen (comme E64) |
+| **E68b** | ⚠️ | Cartographie container par `fsck_apfs -ql /dev/disk0s1` : ordre exact **System, Data, xART, Baseband Data, Hardware, Preboot, Update** ; croisée avec les montages RO de s4(bbfs)/s5(FactoryData)/s6(Preboot UUID+active)/s7(MobileAsset/restore.log) ⇒ **Data = `disk0s1s2`** |增多 s2/s3 dev nodes sont apparus en cours de session ; montage s4–s7 RO tous OK (`{m4..m7}=0`) | Data mount d'abord au **prochain** DFU |
+
+Échec forensics du jour, documenté précisément :
+- `mount_apfs -o ro /dev/disk0s1s2 /mnt6` (et rw, et forme `Data`, et avec
+  System démonté) ⇒ **« Resource busy » (rc=75)** dans TOUTES les formes.
+- `fsck_apfs -ql /dev/disk0s1s2` **fonctionne** et affiche « FILESYSTEM
+  CLEAN » ⇒ le volume est lisible et sain ; c'est le *mount* seul qui est
+  refusé au niveau kernel. `snaputil -l` sur s2 ⇒ « Invalid argument »
+  (même classe de refus des ioctls smart).
+- `disk1` n'est pas APFS (raw/encrypted — hors sujet).
+- Théorie de tête : la **première** commande combinée du jour (celle qui
+  a « disparu » sans output après password sur le mount s2) a laissé le
+  volume attaché-mais-non-monté ; le kernel refuse tout mount subséquent
+  d'un volume déjà attaché. Test discriminant : session sshrd fraîche,
+  Data monté **en premier** avant tout autre mount.
+- Si le refus persiste en session fraîche ⇒ refus politik du kernel
+  (unwrapping clé volume dans le contexte sshrd) ⇒ forensics Data via
+  autre outil (extraction fsck-level, ou helper snappy-style pour 14.6).
+
+### OÙ ON EST À LA CLÔTURE DE CETTE SESSION (2026-11-02)
+
+- Device : état disque **factory complet**, clean checkpoint, reboot
+  envoyé — freeboot attendu : Setup screen.
+- Artefacts canoniques : `~/.cache/tr4mpass/images/kpf_checkra1n_1k.bin`
+  (88 064 B — le seul bon padding) ; `kpf_checkra1n_pad.bin` (98 304 B)
+  conservé uniquement comme artefact négatif (16 KiB = terminator tué).
+- Outils : `tools/pongo_upload.c` (pad-retry in-place + early `pad==0`) et
+  `scripts/build_ssh_rd.sh` (`TR4MPASS_SKIP_AFC=1`) **édités, non
+  committs au moment de cette écriture** — commit avec cette entrée.
+- Logs de référence : `~/.cache/tr4mpass/logs/e64_* … e68_*` +
+  `pongo-load-*`.
+- **Ouvert, à traiter en session suivante** :
+  1. forensics Data-volume en session sshrd fraîche (Data mount FIRST) —
+     cible : `/var/db/diagnostics/Persist/*.tracev3`,
+     `/var/mobile/Library/Logs/CrashReporter/*.ips`,
+     `/var/db/com.apple.xpc.launchd/…` → answers sur le mécanisme réel
+     des loops E65/E66/E67.
+  2. run ladder restant : stub exit-0 signé ldid vs vrai daemon patché
+     14.6 (conofor port) — E66/E67 renversent les hypothèses précédentes ;
+     *aucune* config « moitié renommée » n'est bootable, seule la paire
+     (présent+présent) ou (absent+absent) l'a été.
+  3. suite de tests complète (62) une fois, orchestrée, comme convenu.
