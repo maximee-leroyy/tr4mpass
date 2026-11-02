@@ -9,7 +9,36 @@
 
 ---
 
-## 1. The one picture
+## 0. Current proven route (E64+ — what actually runs today)
+
+The Phase 1–5 iBSS-transition pipeline below is **legacy** (kept for
+context; the pivot to pongoOS happened during E24–E28). The route that
+pwns device and boots the SSH ramdisk *reliably* today, end to end:
+
+```mermaid
+flowchart LR
+    A["DFU<br/>(USB PID 0x1227)"] -->|"tools/ra1npoc<br/>(poc stages 1-4 + boot)"| B["pongoOS<br/>(USB PID 0x4141)"]
+    B -->|"scripts/boot_sshrd.sh<br/>KPF first (padded 1 KiB)"| C["ramdisk<br/>booted with KPF"]
+    C --> D["SSH dropbear<br/>iproxy 2223 -> 22"]
+```
+
+| Stage | What | Tool/command | Proof marker |
+|---|---|---|---|
+| 0 | Device in DFU | manual: Power+Home 10 s → black → release Power, hold Home ~5 s | `ioreg -p IOUSB` shows `4647` (0x1227) |
+| 1–4 | checkm8 exploit stages (reset → setup → spray → overwrite, gaster-style reset between every stage; E19 proof `PWND:[checkm8]`). Two ways to run them: our C worker `./tr4mpass -v` (`src/dfu/checkm8.c`), **or** `tools/ra1npoc`, whose bundled poc does the same job and continues straight into the next stage — **today's canonical chain uses ra1npoc** | `~/.cache/tr4mpass/tools/ra1npoc` (built by `scripts/build_ra1npoc.sh`) | phone screen stays black; then pongo appears |
+| 5 | pongoOS shell | ra1npoc output end | `ioreg` shows `16705` (0x4141) |
+| 6 | KPF loaded (kernel patches for Ramsey/MAC-etc freeboot) | `scripts/boot_sshrd.sh` uploads the **pre-padded** KPF `kpf_checkra1n_1k.bin` (88 064 B — padded to a 1 KiB multiple, *never* 16 KiB: pongoOS finishes a transfer on a *short* final OUT chunk, so full alignment kills the terminator and `modload` hangs on "short read"; see journal E60–E64) → `cmd modload` | `|KPF_OK|` |
+| 7 | SSH ramdisk boots | same script: ramdisk upload → `cmd ramdisk` → `xargs rootdev=md0 rd=md0 -v wdt=-1 trm_default=0` → `xfb` → `bootx` | `|RD_OK|` `|BOOTX_SENT|` |
+| 8 | Shell access | same script probes, or manually: `iproxy 2223 22` + `scripts/ssh_expect22.sh 'echo SHELL_OK'` (sftp pulls: `scripts/sftp_expect.sh`) | `TRY1: SHELL_OK` |
+
+Day-to-day file surgery convention (Embedding/renaming on System volume):
+`cp` backup → `mv` → `sync` (rc=0) → clean `umount` (rc=0) → reboot —
+**one variable per freeboot run** (the E65–E67 boot matrix in the
+journal is why).
+
+---
+
+## 1. The one picture *(legacy Phase 1–5 pipeline — superseded by route 0 above)*
 
 ```mermaid
 flowchart LR
@@ -43,6 +72,12 @@ Shared state: every script sources `scripts/lib.sh`, which owns
 | `fetch_images.sh` | **Phase 2**: resolves IPSW by build, extracts iBSS/iBEC (both n71 board variants), DeviceTree, RestoreRamDisk + trustcache via `BuildManifest.plist`; writes `$(state_dir)/images/env.sh` | end-to-end on iOS 9.3.4 IPSW; entry names cross-checked on iOS 15.8.8 |
 | `run_path_a.sh` | **Phase 4/5**: validates env, exports `TR4MPASS_STOP_AFTER`, runs `./tr4mpass -v`, tees log, prints final serial | stub-tested arg/exit paths |
 | `build_ramdisk_ssh.sh` | **Phase 3**: capability gate for an SSH-ramdisk builder; fails with exact upgrade command today | tool capabilities verified from upstream sources (below) |
+| `build_ra1npoc.sh` | Builds `ra1npoc` (DFU pwn + pongoOS shell), `pongoterm`, `pongo_upload` into `$(state_dir)/tools/` | in daily use E63+ |
+| `build_ssh_rd.sh` | Slim 44 MiB SSH ramdisk builder (`TR4MPASS_SKIP_AFC=1` skips the AppleFSCompression embed for revert-only boots) | built & booted E32–E64 |
+| `pongo_load_ramdisk.sh` | Drives a LIVE pongoOS shell (upload ramdisk, optional `--kpf`, boot-args, boot) | superseded for one-shot boots by `boot_sshrd.sh` |
+| `boot_sshrd.sh` | **Canonical current boot**: DFU check → `ra1npoc` → padded-KPF-first → ramdisk → boot-args → `bootx` → SSH probes; marker-monitored | proven E64–E68 (`KPF_OK/RD_OK/BOOTX_SENT/TRY1: SHELL_OK` first-try in 4 consecutive device runs) |
+| `ssh_expect22.sh` | One command over SSH into the booted ramdisk (password expect, port 2223) | in daily use E47+ |
+| `sftp_expect.sh` | One sftp `get`/`ls` into the booted ramdisk (forensics pulls) | used E68 |
 
 ---
 
@@ -134,7 +169,16 @@ is adopted automatically when it exists.
 │   ├── iBSS.n71m.RELEASE.im4p       (Samsung A9)
 │   ├── iBEC.n71{,m}.RELEASE.im4p
 │   ├── DeviceTree.n71ap.im4p
-│   └── <ramdisk>.dmg [+ .trustcache on iOS 14+]
+│   ├── <ramdisk>.dmg [+ .trustcache on iOS 14+]
+│   ├── kpf_checkra1n_1k.bin        CURRENT boot KPF (88 064 B, 1 KiB-
+│   │                               multiple pad: see section 0 / E60-E64)
+│   ├── kpf_checkra1n_pad.bin       negative-test artifact (16 KiB pad
+│   │                               kills the short-chunk terminator)
+│   ├── kpf_checkra1n.bin           KPF extracted from checkra1n blob
+│   └── ramdisk_ssh_raw.hfs         CURRENT SSH ramdisk (50 331 648 B,
+│                                   built by build_ssh_rd.sh)
+├── tools/                  built binaries (ra1npoc, pongo_upload,
+│                           pongoterm, ...) built by build_ra1npoc.sh
 └── logs/                   timestamped run logs
 ```
 
