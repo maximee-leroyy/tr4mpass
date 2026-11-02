@@ -264,6 +264,17 @@ This tool is for **authorized use only**.
 | [ramdiskutil](https://github.com/cfw-project/ramdiskutil) | iOS restore ramdisk customization |
 | [iExtractor](https://github.com/malus-security/iextractor) | Automated IPSW firmware extraction |
 
+### Exploit & Bootloader Chain (vendored in this repo)
+
+| Project | What we used it for | License |
+|---------|-------------------|---------|
+| [checkm8](https://github.com/axi0m/core/blob/master/exploit/README.md) (axi0m) | The DFU vulnerability our exploit stages are based on — gaster's payload design, reset-between-every-stage discipline (`src/dfu/checkm8.c`) | MIT |
+| [checkra1n / pongoOS](https://github.com/checkra1n/checkra1n) (checkra1n team) | Bootloader exploit + pongoOS shell we dump and use as the loader (serial `pongoOS / checkra1n 2.5.1`); KPF kernel patcher is the checkra1n KPF | MIT |
+| [ra1npoc](https://github.com/kok3shidoll/ra1npoc) (kok3shidoll, commit `3ee6d55`, vendored 2026-11-01) | Open-source checkra1n-clone pongoOS loader — **the current canonical pwn path** (`tools/ra1npoc/`); see its own `README-tr4mpass.md` | MIT |
+| [SSHRD_Script](https://github.com/verygenericname/SSHRD_Script) (verygenericname, submodule `6c05c8a7`, vendored 2026-11-01) | Dropbear + bash + shell tooling (`tools/sshtars/ssh.tar.gz`, BSD-3-Clause) packed into the ramdisk by `scripts/build_ssh_rd.sh` | BSD-3-Clause |
+| [palera1n](https://github.com/palera1n/palera1n) | Reference for the freeboot + KPF-patched boot model we adapt for the bypass | MIT |
+| [conofor / iOS-Hacktivation-Toolkit](https://github.com/conofor/iOS-Hacktivation-Toolkit) (conofor) | `mobileactivationd` patching methodology — the bypass approach this project's activation work is based on (see journal E34–E50); no public iOS 14.x build exists, so a real port is still needed | MIT |
+
 ### Apple Documentation
 
 | Source | What it covers |
