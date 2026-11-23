@@ -200,6 +200,14 @@ DFU Mode -> checkm8 exploit -> load ramdisk -> jailbreak kernel
 -> inject activation record -> cleanup Setup.app -> verify
 ```
 
+> **iOS 15+ (SSV):** the sealed system volume and the absence of `lockdownd`
+> in the restore ramdisk prevent the ramdisk-only activation step from
+> completing. A verified semi-tethered flow for iOS 15.x is documented in
+> [`docs/palera1n-fakefs-bypass.md`](docs/palera1n-fakefs-bypass.md): palera1n
+> rootful fakefs plus a `mobileactivationd` signed with the stock iOS
+> entitlements. Path A still provides the checkm8 and SSH-ramdisk stages; the
+> C activation step is not used in that flow.
+
 ### Path B -- Session Activation (A12 and later)
 
 Does not use a hardware exploit. Instead, it manipulates the device's identity in DFU mode, then uses Apple's own activation protocol (drmHandshake session mode) to change the lock state.
